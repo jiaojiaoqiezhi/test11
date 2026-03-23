@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>模型训练迭代可视化</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
+        body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background-color: #f8fafc; }
+        .canvas-container { position: relative; width: 100%; aspect-ratio: 1 / 1; background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); overflow: hidden; }
+        #dataCanvas { cursor: crosshair; width: 100%; height: 100%; }
+        .loss-chart { height: 120px; width: 100%; background: #1e293b; border-radius: 8px; margin-top: 1rem; }
+        .dot { transition: all 0.3s ease; }
+        .control-panel { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+        .btn { transition: all 0.2s; }
+        .btn:active { transform: scale(0.95); }
+    </style>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    const katexOptions = {
+        delimiters: [
+            {left: '\\[', right: '\\]', display: true},
+            {left: '\\(', right: '\\)', display: false},
+            {left: '$$', right: '$$', display: true},
+            {left: '$', right: '$', display: false}
+        ],
+        throwOnError: false,
+        strict: false,
+        trust: true
+    };
+
+    let renderTimeout;
+    function safeRender() {
+        if (renderTimeout) clearTimeout(renderTimeout);
+        renderTimeout = setTimeout(() => {
+            renderMathInElement(document.body, katexOptions);
+        }, 100);
+    }
+
+    renderMathInElement(document.body, katexOptions);
+
+    const observer = new MutationObserver((mutations) => {
+        let shouldRender = false;
+        mutations.forEach((mutation) => {
+            if (mutation.target &&
+                mutation.target.className &&
+                typeof mutation.target.className === 'string' &&
+                mutation.target.className.includes('katex')) {
+                return;
+            }
+            shouldRender = true;
+        });
+
+        if (shouldRender) {
+            safeRender();
+        }
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true
+    });
+
+    setInterval(() => {
+        const text = document.body.innerText;
+        if (text.includes('\\(') || text.includes('$$')) {
+            safeRender();
+        }
+    }, 2000);
+});
+</script>
+</head>
+<body class="p-4 md:p-8">
+    <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
+        
+        <!-- 左侧：理论与状态 -->
+        <div class="space-y-6">
+            <header>
+                <h1 class="text-3xl font-bold text-slate-800">模型训练迭代</h1>
+                <p class="text-slate-500 mt-2">观察线性分类器如何通过梯度下降寻找最优边界</p>
+            </header>
+
+            <div class="control-panel p-6 space-y-6">
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-2">学习率 (Learning Rate): <span id="lrValue">0.1</span></label>
+                    <input type="range" id="lrSlider" min="0.01" max="1" step="0.01" value="0.1" class="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600">
+                    <p class="text-xs text-slate-400 mt-2">公式: \(\theta = \theta - \eta \cdot \nabla J(\theta)\)</p>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <button id="addDataBtn" class="btn bg-blue-50 text-blue-700 px-4 py-2 rounded-lg font-medium border border-blue-200 hover:bg-blue-100">生成数据</button>
+                    <button id="resetBtn" class="btn bg-slate-50 text-slate-700 px-4 py-2 rounded-lg font-medium border border-slate-200 hover:bg-slate-100">重置模型</button>
+                </div>
+
+                <button id="trainBtn" class="btn w-full bg-blue-600 text-white px-4 py-3 rounded-lg font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 disabled:bg-slate-300 disabled:shadow-none">
+                    开始连续训练
+                </button>
+
+                <div class="pt-4 border-t border-slate-100">
+                    <div class="flex justify-between text-sm mb-1">
+                        <span class="text-slate-500">迭代次数 (Epoch):</span>
+                        <span id="epochCount" class="font-mono font-bold">0</span>
+                    </div>
+                    <div class="flex justify-between text-sm">
+                        <span class="text-slate-500">当前损失 (Loss):</span>
+                        <span id="lossText" class="font-mono font-bold text-blue-600">0.0000</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="control-panel p-6">
+                <h3 class="text-sm font-bold text-slate-800 mb-3 uppercase tracking-wider">实时损失曲线 (Loss)</h3>
+                <canvas id="lossCanvas" class="loss-chart"></canvas>
+            </div>
+        </div>
+
+        <!-- 中间：可视化画布 -->
+        <div class="lg:col-span-2">
+            <div class="canvas-container">
+                <canvas id="dataCanvas"></canvas>
+                <div class="absolute top-4 left-4 flex gap-4 pointer-events-none">
+                    <div class="flex items-center gap-2 bg-white/80 backdrop-blur px-3 py-1 rounded-full border border-slate-200 shadow-sm text-xs font-medium">
+                        <div class="w-3 h-3 rounded-full bg-orange-500"></div> 类别 A
+                    </div>
+                    <div class="flex items-center gap-2 bg-white/80 backdrop-blur px-3 py-1 rounded-full border border-slate-200 shadow-sm text-xs font-medium">
+                        <div class="w-3 h-3 rounded-full bg-indigo-500"></div> 类别 B
+                    </div>
+                </div>
+                <div class="absolute bottom-4 right-4 text-[10px] text-slate-400 bg-white/50 px-2 py-1 rounded">
+                    点击画布可手动添加数据点 (左键A/右键B)
+                </div>
+            </div>
+            
+            <div class="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="p-4 bg-white rounded-xl border border-slate-200">
+                    <p class="text-xs font-bold text-slate-400 uppercase mb-2">决策边界方程</p>
+                    <p class="text-lg font-mono text-slate-700" id="formulaText">\(w_1 x + w_2 y + b = 0\)</p>
+                </div>
+                <div class="p-4 bg-white rounded-xl border border-slate-200">
+                    <p class="text-xs font-bold text-slate-400 uppercase mb-2">激活函数</p>
+                    <p class="text-lg font-mono text-slate-700">\(\sigma(z) = \frac{1}{1 + e^{-z}}\)</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('dataCanvas');
+        const ctx = canvas.getContext('2d');
+        const lossCanvas = document.getElementById('lossCanvas');
+        const lctx = lossCanvas.getContext('2d');
+        
+        // 状态变量
+        let points = [];
+        let weights = { w1: Math.random() - 0.5, w2: Math.random() - 0.5, b: Math.random() - 0.5 };
+        let learningRate = 0.1;
+        let epoch = 0;
+        let lossHistory = [];
+        let isTraining = false;
+        let animationId = null;
+
+        // 初始化
+        function init() {
+            resize();
+            generateData();
+            updateUI();
+            requestAnimationFrame(render);
+        }
+
+        function resize() {
+            const container = canvas.parentElement;
+            canvas.width = container.clientWidth * window.devicePixelRatio;
+            canvas.height = container.clientHeight * window.devicePixelRatio;
+            lossCanvas.width = lossCanvas.clientWidth * window.devicePixelRatio;
+            lossCanvas.height = lossCanvas.clientHeight * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+            lctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+
+        // 逻辑转换：Canvas坐标(0~Width) -> 模型输入(-1~1)
+        function toModelSpace(x, y) {
+            const rect = canvas.getBoundingClientRect();
+            const w = rect.width;
+            const h = rect.height;
+            return {
+                mx: (x / w) * 2 - 1,
+                my: (1 - y / h) * 2 - 1 // 翻转Y轴使上方为正
+            };
+        }
+
+        function fromModelSpace(mx, my) {
+            const rect = canvas.getBoundingClientRect();
+            const w = rect.width;
+            const h = rect.height;
+            return {
+                cx: (mx + 1) / 2 * w,
+                cy: (1 - (my + 1) / 2) * h
+            };
+        }
+
+        // 数据生成
+        function generateData() {
+            points = [];
+            epoch = 0;
+            lossHistory = [];
+            const centerA = { x: -0.4, y: 0.4 };
+            const centerB = { x: 0.4, y: -0.4 };
+            
+            for (let i = 0; i < 15; i++) {
+                points.push({
+                    x: centerA.x + (Math.random() - 0.5) * 0.6,
+                    y: centerA.y + (Math.random() - 0.5) * 0.6,
+                    label: 1
+                });
+                points.push({
+                    x: centerB.x + (Math.random() - 0.5) * 0.6,
+                    y: centerB.y + (Math.random() - 0.5) * 0.6,
+                    label: 0
+                });
+            }
+            updateUI();
+        }
+
+        // 核心数学：逻辑回归训练
+        function trainStep() {
+            if (points.length === 0) return;
+
+            let dw1 = 0, dw2 = 0, db = 0;
+            let totalLoss = 0;
+
+            points.forEach(p => {
+                // 前向传播
+                const z = weights.w1 * p.x + weights.w2 * p.y + weights.b;
+                const prediction = 1 / (1 + Math.exp(-z));
+                
+                // 计算损失 (Binary Cross-Entropy)
+                const eps = 1e-15; // 防止log(0)
+                const loss = -(p.label * Math.log(prediction + eps) + (1 - p.label) * Math.log(1 - prediction + eps));
+                totalLoss += loss;
+
+                // 反向传播 (梯度计算)
+                const dz = prediction - p.label;
+                dw1 += dz * p.x;
+                dw2 += dz * p.y;
+                db += dz;
+            });
+
+            const m = points.length;
+            totalLoss /= m;
+            
+            // 权重更新
+            weights.w1 -= (learningRate * dw1) / m;
+            weights.w2 -= (learningRate * dw2) / m;
+            weights.b -= (learningRate * db) / m;
+
+            epoch++;
+            lossHistory.push(totalLoss);
+            if (lossHistory.length > 100) lossHistory.shift();
+            
+            updateUI();
+        }
+
+        function updateUI() {
+            document.getElementById('epochCount').innerText = epoch;
+            document.getElementById('lossText').innerText = lossHistory.length ? lossHistory[lossHistory.length - 1].toFixed(4) : "0.0000";
+            
+            // 更新公式文本
+            const sign1 = weights.w2 >= 0 ? "+" : "-";
+            const sign2 = weights.b >= 0 ? "+" : "-";
+            document.getElementById('formulaText').innerText = 
+                `\\(${weights.w1.toFixed(2)}x ${sign1} ${Math.abs(weights.w2).toFixed(2)}y ${sign2} ${Math.abs(weights.b).toFixed(2)} = 0\\)`;
+        }
+
+        // 渲染函数
+        function render() {
+            const rect = canvas.getBoundingClientRect();
+            const w = rect.width;
+            const h = rect.height;
+
+            ctx.clearRect(0, 0, w, h);
+
+            // 绘制背景色（决策区域）
+            const imageData = ctx.createImageData(w, h);
+            for (let i = 0; i < w; i += 4) {
+                for (let j = 0; j < h; j += 4) {
+                    const pos = toModelSpace(i, j);
+                    const z = weights.w1 * pos.mx + weights.w2 * pos.my + weights.b;
+                    const prob = 1 / (1 + Math.exp(-z));
+                    
+                    // 简单的区块渲染优化
+                    for(let dx=0; dx<4; dx++) {
+                        for(let dy=0; dy<4; dy++) {
+                            const idx = ((j+dy) * w + (i+dx)) * 4;
+                            if (idx >= imageData.data.length) continue;
+                            imageData.data[idx] = prob > 0.5 ? 238 : 224; // R
+                            imageData.data[idx+1] = prob > 0.5 ? 242 : 231; // G
+                            imageData.data[idx+2] = prob > 0.5 ? 255 : 255; // B
+                            imageData.data[idx+3] = 255;
+                        }
+                    }
+                }
+            }
+            ctx.putImageData(imageData, 0, 0);
+
+            // 绘制决策边界线
+            ctx.beginPath();
+            ctx.strokeStyle = '#334155';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([5, 5]);
+
+            // 寻找线段与画布边界的交点
+            // w1*x + w2*y + b = 0
+            let startPoint = null;
+            let endPoint = null;
+
+            const edges = [
+                { x1: -1, y1: -1, x2: 1, y2: -1 }, // 下
+                { x1: -1, y1: 1, x2: 1, y2: 1 },   // 上
+                { x1: -1, y1: -1, x2: -1, y2: 1 }, // 左
+                { x1: 1, y1: -1, x2: 1, y2: 1 }    // 右
+            ];
+
+            edges.forEach(edge => {
+                let intersect = null;
+                if (edge.x1 === edge.x2) { // 垂直边缘
+                    const x = edge.x1;
+                    const y = -(weights.w1 * x + weights.b) / weights.w2;
+                    if (y >= -1 && y <= 1) intersect = { mx: x, my: y };
+                } else { // 水平边缘
+                    const y = edge.y1;
+                    const x = -(weights.w2 * y + weights.b) / weights.w1;
+                    if (x >= -1 && x <= 1) intersect = { mx: x, my: y };
+                }
+                if (intersect) {
+                    const cp = fromModelSpace(intersect.mx, intersect.my);
+                    if (!startPoint) startPoint = cp;
+                    else endPoint = cp;
+                }
+            });
+
+            if (startPoint && endPoint) {
+                ctx.moveTo(startPoint.cx, startPoint.cy);
+                ctx.lineTo(endPoint.cx, endPoint.cy);
+                ctx.stroke();
+            }
+            ctx.setLineDash([]);
+
+            // 绘制数据点
+            points.forEach(p => {
+                const cp = fromModelSpace(p.x, p.y);
+                ctx.beginPath();
+                ctx.arc(cp.cx, cp.cy, 6, 0, Math.PI * 2);
+                ctx.fillStyle = p.label === 1 ? '#f97316' : '#6366f1';
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = 'rgba(0,0,0,0.1)';
+                ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+            });
+
+            renderLossChart();
+
+            if (isTraining) {
+                trainStep();
+                animationId = requestAnimationFrame(render);
+            } else {
+                requestAnimationFrame(render);
+            }
+        }
+
+        function renderLossChart() {
+            const lw = lossCanvas.width / window.devicePixelRatio;
+            const lh = lossCanvas.height / window.devicePixelRatio;
+            lctx.clearRect(0, 0, lw, lh);
+            
+            if (lossHistory.length < 2) return;
+
+            const maxLoss = Math.max(...lossHistory, 1);
+            lctx.beginPath();
+            lctx.strokeStyle = '#60a5fa';
+            lctx.lineWidth = 2;
+            lctx.lineJoin = 'round';
+
+            lossHistory.forEach((l, i) => {
+                const x = (i / (lossHistory.length - 1)) * lw;
+                const y = lh - (l / maxLoss) * (lh - 20) - 10;
+                if (i === 0) lctx.moveTo(x, y);
+                else lctx.lineTo(x, y);
+            });
+            lctx.stroke();
+
+            // 填充渐变
+            lctx.lineTo(lw, lh);
+            lctx.lineTo(0, lh);
+            const grad = lctx.createLinearGradient(0, 0, 0, lh);
+            grad.addColorStop(0, 'rgba(96, 165, 250, 0.3)');
+            grad.addColorStop(1, 'rgba(96, 165, 250, 0)');
+            lctx.fillStyle = grad;
+            lctx.fill();
+        }
+
+        // 事件监听
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const pos = toModelSpace(x, y);
+            
+            points.push({
+                x: pos.mx,
+                y: pos.my,
+                label: e.button === 2 ? 0 : 1 // 右键类别B，左键类别A
+            });
+            updateUI();
+        });
+
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+        document.getElementById('lrSlider').addEventListener('input', (e) => {
+            learningRate = parseFloat(e.target.value);
+            document.getElementById('lrValue').innerText = learningRate.toFixed(2);
+        });
+
+        document.getElementById('addDataBtn').addEventListener('click', generateData);
+        
+        document.getElementById('resetBtn').addEventListener('click', () => {
+            weights = { w1: Math.random() - 0.5, w2: Math.random() - 0.5, b: Math.random() - 0.5 };
+            epoch = 0;
+            lossHistory = [];
+            updateUI();
+        });
+
+        const trainBtn = document.getElementById('trainBtn');
+        trainBtn.addEventListener('click', () => {
+            isTraining = !isTraining;
+            trainBtn.innerText = isTraining ? "暂停训练" : "继续训练";
+            trainBtn.classList.toggle('bg-blue-600');
+            trainBtn.classList.toggle('bg-red-500');
+        });
+
+        window.addEventListener('resize', resize);
+        
+        // 启动
+        init();
+    </script>
+</body>
+</html>

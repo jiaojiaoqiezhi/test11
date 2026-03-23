@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI功能演进：从反应式到预测式</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; overflow-x: hidden; }
+        canvas { border: 2px solid #334155; border-radius: 8px; background: #020617; cursor: crosshair; }
+        .stat-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(4px); border: 1px solid #475569; }
+        .gradient-text { background: linear-gradient(135deg, #60a5fa, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .node-active { fill: #60a5fa; filter: drop-shadow(0 0 5px #60a5fa); }
+    </style>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    const katexOptions = {
+        delimiters: [
+            {left: '\\[', right: '\\]', display: true},
+            {left: '\\(', right: '\\)', display: false},
+            {left: '$$', right: '$$', display: true},
+            {left: '$', right: '$', display: false}
+        ],
+        throwOnError: false,
+        strict: false,
+        trust: true
+    };
+
+    let renderTimeout;
+    function safeRender() {
+        if (renderTimeout) clearTimeout(renderTimeout);
+        renderTimeout = setTimeout(() => {
+            renderMathInElement(document.body, katexOptions);
+        }, 100);
+    }
+
+    renderMathInElement(document.body, katexOptions);
+
+    const observer = new MutationObserver((mutations) => {
+        let shouldRender = false;
+        mutations.forEach((mutation) => {
+            if (mutation.target &&
+                mutation.target.className &&
+                typeof mutation.target.className === 'string' &&
+                mutation.target.className.includes('katex')) {
+                return;
+            }
+            shouldRender = true;
+        });
+
+        if (shouldRender) {
+            safeRender();
+        }
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true
+    });
+
+    setInterval(() => {
+        const text = document.body.innerText;
+        if (text.includes('\\(') || text.includes('$$')) {
+            safeRender();
+        }
+    }, 2000);
+});
+</script>
+</head>
+<body class="p-4 md:p-8">
+    <div class="max-w-6xl mx-auto">
+        <!-- Header -->
+        <header class="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4">
+            <div>
+                <h1 class="text-3xl font-bold gradient-text">AI 功能演进模拟</h1>
+                <p class="text-slate-400 mt-2">对比“无记忆反应式”与“历史权重反馈式”控制算法</p>
+            </div>
+            <div class="flex gap-4 bg-slate-800/50 p-2 rounded-lg border border-slate-700">
+                <button id="mode-none" class="px-4 py-2 rounded transition-all bg-blue-600 text-white font-medium">无记忆模式</button>
+                <button id="mode-history" class="px-4 py-2 rounded transition-all bg-slate-700 hover:bg-slate-600 text-slate-300">带反馈循环</button>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Main Simulation -->
+            <div class="lg:col-span-2 space-y-4">
+                <div class="relative">
+                    <canvas id="simCanvas" width="800" height="500" class="w-full h-auto shadow-2xl"></canvas>
+                    <div id="statusOverlay" class="absolute top-4 left-4 bg-black/60 px-3 py-1 rounded text-xs font-mono border border-blue-500/30">
+                        STATUS: RUNNING
+                    </div>
+                    <div class="absolute bottom-4 right-4 flex gap-2">
+                        <button id="resetBtn" class="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-sm">重置环境</button>
+                        <button id="clearTraceBtn" class="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-sm">清除痕迹</button>
+                    </div>
+                </div>
+
+                <!-- Formulas -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="stat-card p-4 rounded-xl">
+                        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">隐藏状态更新</h3>
+                        <div class="text-sm font-mono text-blue-300">\[h_t = f(W \cdot h_{t-1} + U \cdot x_t)\]</div>
+                        <p class="text-[10px] text-slate-500 mt-2 italic">历史特征 \(h_{t-1}\) 通过循环连接影响当前决策</p>
+                    </div>
+                    <div class="stat-card p-4 rounded-xl">
+                        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">动作选择概率 (Softmax)</h3>
+                        <div class="text-sm font-mono text-purple-300">\[P(a) = \frac{e^{Q(s, a) / \tau}}{\sum e^{Q(s, a_j) / \tau}}\]</div>
+                        <p class="text-[10px] text-slate-500 mt-2 italic">权重的累积改变了动作的分布概率</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dashboard / Analytics -->
+            <div class="space-y-6">
+                <div class="stat-card p-6 rounded-xl border-l-4 border-blue-500">
+                    <h2 class="text-lg font-bold mb-4 flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
+                        实时决策权重
+                    </h2>
+                    <div id="weightVisualizer" class="space-y-4">
+                        <!-- Weight Bars JS-Injected -->
+                    </div>
+                    <div class="mt-6 pt-6 border-t border-slate-700">
+                        <div class="flex justify-between text-xs text-slate-400 mb-1">
+                            <span>权重更新步幅 \(\eta\)</span>
+                            <span id="etaVal">0.15</span>
+                        </div>
+                        <input type="range" id="etaSlider" min="0" max="50" value="15" class="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500">
+                    </div>
+                </div>
+
+                <div class="stat-card p-6 rounded-xl border-l-4 border-purple-500">
+                    <h2 class="text-lg font-bold mb-4">学习演进日志</h2>
+                    <div id="logContainer" class="h-48 overflow-y-auto font-mono text-[11px] space-y-1 text-slate-400">
+                        <div>> 系统就绪，等待指令...</div>
+                        <div>> 当前模式：无记忆 (Reactive)</div>
+                    </div>
+                </div>
+
+                <div class="bg-blue-900/20 border border-blue-800/50 p-4 rounded-lg">
+                    <p class="text-xs leading-relaxed text-blue-200">
+                        <strong>实验指导：</strong> 观察小车在遭遇墙壁时的行为。在“无记忆”模式下，它永远重复同样的错误；而在“带反馈循环”模式下，碰撞产生的负向更新 \(\Delta w\) 会逐渐调整隐藏状态，使小车产生“预判”并优化路径。
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+        const logContainer = document.getElementById('logContainer');
+        
+        // Configuration
+        const CONFIG = {
+            carSize: 10,
+            sensorRange: 60,
+            numSensors: 3, // Left, Center, Right
+            eta: 0.15,
+            decay: 0.9995,
+            historyMode: false
+        };
+
+        // State
+        let agent = {
+            x: 100,
+            y: 250,
+            angle: 0,
+            speed: 2,
+            sensors: [0, 0, 0],
+            weights: [0, 0, 0], // Weights for [Turn Left, Straight, Turn Right]
+            path: []
+        };
+
+        const obstacles = [
+            { x: 300, y: 150, w: 20, h: 200 },
+            { x: 500, y: 0, w: 20, h: 300 },
+            { x: 500, y: 400, w: 20, h: 100 },
+            { x: 150, y: 100, w: 100, h: 20 },
+            { x: 150, y: 380, w: 400, h: 20 },
+            { x: 650, y: 200, w: 20, h: 200 }
+        ];
+
+        // UI Updates
+        function addLog(msg, color = 'text-slate-400') {
+            const div = document.createElement('div');
+            div.className = color;
+            div.textContent = `> ${msg}`;
+            logContainer.prepend(div);
+            if (logContainer.children.length > 20) logContainer.lastChild.remove();
+        }
+
+        function updateWeightUI() {
+            const container = document.getElementById('weightVisualizer');
+            const labels = ['左转趋势 (L)', '直线趋势 (S)', '右转趋势 (R)'];
+            const colors = ['bg-rose-500', 'bg-emerald-500', 'bg-amber-500'];
+            
+            container.innerHTML = agent.weights.map((w, i) => `
+                <div>
+                    <div class="flex justify-between text-[10px] mb-1">
+                        <span>${labels[i]}</span>
+                        <span>${w.toFixed(3)}</span>
+                    </div>
+                    <div class="w-full bg-slate-700 h-2 rounded-full overflow-hidden">
+                        <div class="${colors[i]} h-full transition-all duration-200" style="width: ${Math.min(100, Math.max(5, (w + 1) * 50))}%"></div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Logic
+        function getSensorData(x, y, angle) {
+            const angles = [-0.5, 0, 0.5]; // Left, center, right offsets
+            return angles.map(offset => {
+                let dist = 0;
+                while (dist < CONFIG.sensorRange) {
+                    const sx = x + Math.cos(angle + offset) * dist;
+                    const sy = y + Math.sin(angle + offset) * dist;
+                    const hit = obstacles.some(o => sx > o.x && sx < o.x + o.w && sy > o.y && sy < o.y + o.h) ||
+                                sx < 0 || sx > canvas.width || sy < 0 || sy > canvas.height;
+                    if (hit) return 1 - (dist / CONFIG.sensorRange);
+                    dist += 2;
+                }
+                return 0;
+            });
+        }
+
+        function softmax(arr) {
+            const tau = 0.5;
+            const exps = arr.map(v => Math.exp(v / tau));
+            const sum = exps.reduce((a, b) => a + b);
+            return exps.map(v => v / sum);
+        }
+
+        function update() {
+            agent.sensors = getSensorData(agent.x, agent.y, agent.angle);
+            
+            let actionIdx = 1; // Default: Straight
+
+            if (!CONFIG.historyMode) {
+                // Reactive Mode (Fixed Logic)
+                if (agent.sensors[1] > 0.5) {
+                    actionIdx = agent.sensors[0] > agent.sensors[2] ? 2 : 0;
+                }
+            } else {
+                // History Enabled Mode (Predictive Weight-based)
+                // MDP transition logic: Choose action based on weighted probability
+                const probs = softmax(agent.weights);
+                const r = Math.random();
+                if (r < probs[0]) actionIdx = 0;
+                else if (r < probs[0] + probs[1]) actionIdx = 1;
+                else actionIdx = 2;
+
+                // Hidden State update simulation: weights decay over time to ensure stability
+                agent.weights = agent.weights.map(w => w * CONFIG.decay);
+            }
+
+            // Apply movement
+            if (actionIdx === 0) agent.angle -= 0.08;
+            if (actionIdx === 2) agent.angle += 0.08;
+            
+            const nextX = agent.x + Math.cos(agent.angle) * agent.speed;
+            const nextY = agent.y + Math.sin(agent.angle) * agent.speed;
+
+            // Collision Check
+            const collision = obstacles.some(o => 
+                nextX > o.x - 5 && nextX < o.x + o.w + 5 && 
+                nextY > o.y - 5 && nextY < o.y + o.h + 5
+            ) || nextX < 0 || nextX > canvas.width || nextY < 0 || nextY > canvas.height;
+
+            if (collision) {
+                if (CONFIG.historyMode) {
+                    // Weight Update Rule: Δw = η * (Target - Output) * x
+                    // Target is -1 (avoid this action), Output is current probability, x is sensor intensity
+                    const penalty = -1.0;
+                    agent.weights[actionIdx] += CONFIG.eta * (penalty - agent.weights[actionIdx]) * Math.max(...agent.sensors);
+                    addLog(`碰撞检测！更新权重 Δw[${actionIdx}]`, 'text-rose-400');
+                }
+                agent.angle += Math.PI; // Bounce back
+            } else {
+                agent.x = nextX;
+                agent.y = nextY;
+                
+                // Reward movement in history mode
+                if (CONFIG.historyMode && actionIdx === 1 && Math.max(...agent.sensors) < 0.2) {
+                    agent.weights[1] += CONFIG.eta * 0.01; // Small reinforcement for moving straight when clear
+                }
+            }
+
+            agent.path.push({x: agent.x, y: agent.y});
+            if (agent.path.length > 500) agent.path.shift();
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Obstacles
+            ctx.fillStyle = '#1e293b';
+            ctx.strokeStyle = '#334155';
+            obstacles.forEach(o => {
+                ctx.fillRect(o.x, o.y, o.w, o.h);
+                ctx.strokeRect(o.x, o.y, o.w, o.h);
+            });
+
+            // Draw Path Trace
+            if (agent.path.length > 2) {
+                ctx.beginPath();
+                ctx.strokeStyle = CONFIG.historyMode ? 'rgba(192, 132, 252, 0.4)' : 'rgba(96, 165, 250, 0.4)';
+                ctx.lineWidth = 2;
+                ctx.moveTo(agent.path[0].x, agent.path[0].y);
+                for (let i = 1; i < agent.path.length; i++) {
+                    ctx.lineTo(agent.path[i].x, agent.path[i].y);
+                }
+                ctx.stroke();
+            }
+
+            // Draw Sensors
+            const sensorAngles = [-0.5, 0, 0.5];
+            sensorAngles.forEach((offset, i) => {
+                const color = agent.sensors[i] > 0.5 ? '#f43f5e' : '#10b981';
+                ctx.beginPath();
+                ctx.strokeStyle = color;
+                ctx.globalAlpha = 0.3;
+                ctx.moveTo(agent.x, agent.y);
+                ctx.lineTo(
+                    agent.x + Math.cos(agent.angle + offset) * CONFIG.sensorRange,
+                    agent.y + Math.sin(agent.angle + offset) * CONFIG.sensorRange
+                );
+                ctx.stroke();
+                ctx.globalAlpha = 1.0;
+            });
+
+            // Draw Agent
+            ctx.save();
+            ctx.translate(agent.x, agent.y);
+            ctx.rotate(agent.angle);
+            ctx.fillStyle = CONFIG.historyMode ? '#c084fc' : '#60a5fa';
+            ctx.beginPath();
+            ctx.moveTo(CONFIG.carSize, 0);
+            ctx.lineTo(-CONFIG.carSize/2, CONFIG.carSize/2);
+            ctx.lineTo(-CONFIG.carSize/2, -CONFIG.carSize/2);
+            ctx.closePath();
+            ctx.fill();
+            // Direction Glow
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = CONFIG.historyMode ? '#c084fc' : '#60a5fa';
+            ctx.stroke();
+            ctx.restore();
+
+            updateWeightUI();
+        }
+
+        function loop() {
+            update();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        // Event Listeners
+        document.getElementById('mode-none').onclick = (e) => {
+            CONFIG.historyMode = false;
+            e.target.className = "px-4 py-2 rounded transition-all bg-blue-600 text-white font-medium";
+            document.getElementById('mode-history').className = "px-4 py-2 rounded transition-all bg-slate-700 text-slate-300";
+            addLog("切换至：无记忆模式 (基于瞬时传感器读数)", "text-blue-400");
+        };
+
+        document.getElementById('mode-history').onclick = (e) => {
+            CONFIG.historyMode = true;
+            e.target.className = "px-4 py-2 rounded transition-all bg-purple-600 text-white font-medium";
+            document.getElementById('mode-none').className = "px-4 py-2 rounded transition-all bg-slate-700 text-slate-300";
+            addLog("切换至：带反馈循环 (历史权重演进)", "text-purple-400");
+        };
+
+        document.getElementById('resetBtn').onclick = () => {
+            agent.x = 100;
+            agent.y = 250;
+            agent.angle = 0;
+            agent.weights = [0, 0, 0];
+            agent.path = [];
+            addLog("环境与权重已重置");
+        };
+
+        document.getElementById('clearTraceBtn').onclick = () => {
+            agent.path = [];
+        };
+
+        document.getElementById('etaSlider').oninput = (e) => {
+            CONFIG.eta = e.target.value / 100;
+            document.getElementById('etaVal').textContent = CONFIG.eta.toFixed(2);
+        };
+
+        // Initialize
+        updateWeightUI();
+        loop();
+        addLog("系统初始化完成。");
+
+    </script>
+</body>
+</html>
