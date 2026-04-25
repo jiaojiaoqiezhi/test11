@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>语义评价指标对比：BLEU vs 语义相似度</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background-color: #f8fafc; }
+        .score-bar { transition: width 0.6s cubic-bezier(0.34, 1.56, 0.64, 1); }
+        .card-active { border-color: #3b82f6; ring: 2px; ring-color: #3b82f6; }
+        .math-box { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(4px); }
+    </style>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    const katexOptions = {
+        delimiters: [
+            {left: '\\[', right: '\\]', display: true},
+            {left: '\\(', right: '\\)', display: false},
+            {left: '$$', right: '$$', display: true},
+            {left: '$', right: '$', display: false}
+        ],
+        throwOnError: false,
+        strict: false,
+        trust: true
+    };
+
+    let renderTimeout;
+    function safeRender() {
+        if (renderTimeout) clearTimeout(renderTimeout);
+        renderTimeout = setTimeout(() => {
+            renderMathInElement(document.body, katexOptions);
+        }, 100);
+    }
+
+    renderMathInElement(document.body, katexOptions);
+
+    const observer = new MutationObserver((mutations) => {
+        let shouldRender = false;
+        mutations.forEach((mutation) => {
+            if (mutation.target &&
+                mutation.target.className &&
+                typeof mutation.target.className === 'string' &&
+                mutation.target.className.includes('katex')) {
+                return;
+            }
+            shouldRender = true;
+        });
+
+        if (shouldRender) {
+            safeRender();
+        }
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true
+    });
+
+    setInterval(() => {
+        const text = document.body.innerText;
+        if (text.includes('\\(') || text.includes('$$')) {
+            safeRender();
+        }
+    }, 2000);
+});
+</script>
+</head>
+<body class="p-4 md:p-8">
+    <div class="max-w-4xl mx-auto">
+        <!-- Header -->
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-bold text-slate-800 mb-2">语义评价指标对比</h1>
+            <p class="text-slate-600 italic">对比字面匹配 (BLEU) 与 深度语义理解 (Semantic Similarity) 的差异</p>
+        </header>
+
+        <!-- Main Display -->
+        <div class="bg-white rounded-2xl shadow-xl p-6 mb-8 border border-slate-100">
+            <div class="mb-6">
+                <span class="text-xs font-semibold uppercase tracking-wider text-blue-500">参考文本 (Reference)</span>
+                <div class="text-2xl font-bold text-slate-800 p-4 bg-blue-50 rounded-lg mt-2 border-l-4 border-blue-500">
+                    "今天的天气真的很不错"
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <!-- Scores -->
+                <div class="space-y-6">
+                    <div>
+                        <div class="flex justify-between mb-2">
+                            <span class="font-semibold text-slate-700">BLEU 分数 (N-gram)</span>
+                            <span id="bleu-val" class="font-mono text-blue-600 font-bold">0.0</span>
+                        </div>
+                        <div class="w-full bg-slate-100 rounded-full h-4 overflow-hidden">
+                            <div id="bleu-bar" class="score-bar h-full bg-blue-500 w-0"></div>
+                        </div>
+                        <p class="text-xs text-slate-400 mt-2">基于 \(n\text{-gram}\) 精确率与短句惩罚 \(BP\)</p>
+                    </div>
+
+                    <div>
+                        <div class="flex justify-between mb-2">
+                            <span class="font-semibold text-slate-700">语义相似度 (BERTScore 等)</span>
+                            <span id="semantic-val" class="font-mono text-emerald-600 font-bold">0.0</span>
+                        </div>
+                        <div class="w-full bg-slate-100 rounded-full h-4 overflow-hidden">
+                            <div id="semantic-bar" class="score-bar h-full bg-emerald-500 w-0"></div>
+                        </div>
+                        <p class="text-xs text-slate-400 mt-2">基于分布式向量空间的贪婪匹配机制</p>
+                    </div>
+                </div>
+
+                <!-- Analysis -->
+                <div class="bg-slate-50 rounded-xl p-4 border border-slate-200">
+                    <h3 class="text-sm font-bold text-slate-700 mb-2 uppercase">算法逻辑诊断</h3>
+                    <div id="logic-analysis" class="text-sm text-slate-600 leading-relaxed">
+                        请选择一个待评价句子以查看分析结果。
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Options Slider/Cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            <button onclick="updateComparison(0)" class="option-card p-4 rounded-xl border-2 bg-white hover:shadow-md transition-all text-left">
+                <span class="text-xs font-bold text-slate-400">同义替换</span>
+                <p class="mt-2 text-slate-800 font-medium">"今日的气候确实挺好的"</p>
+            </button>
+            <button onclick="updateComparison(1)" class="option-card p-4 rounded-xl border-2 bg-white hover:shadow-md transition-all text-left">
+                <span class="text-xs font-bold text-slate-400">语序调整</span>
+                <p class="mt-2 text-slate-800 font-medium">"真的不错，今天的天气"</p>
+            </button>
+            <button onclick="updateComparison(2)" class="option-card p-4 rounded-xl border-2 bg-white hover:shadow-md transition-all text-left">
+                <span class="text-xs font-bold text-slate-400">微小噪声</span>
+                <p class="mt-2 text-slate-800 font-medium">"今天的天气真滴不辍"</p>
+            </button>
+            <button onclick="updateComparison(3)" class="option-card p-4 rounded-xl border-2 bg-white hover:shadow-md transition-all text-left">
+                <span class="text-xs font-bold text-slate-400">完全无关</span>
+                <p class="mt-2 text-slate-800 font-medium">"我喜欢在家里吃苹果"</p>
+            </button>
+        </div>
+
+        <!-- Formulas Section -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="math-box p-4 rounded-lg border border-slate-200">
+                <h4 class="text-xs font-bold text-blue-600 mb-2">BLEU 公式</h4>
+                <div class="text-sm overflow-x-auto text-slate-700">
+                    \[BP \cdot \exp\left(\sum_{n=1}^{4} w_n \ln p_n\right)\]
+                    <p class="text-[10px] mt-2 text-slate-500">\(p_n\): n-gram 精确率 | \(BP\): 短句惩罚系数</p>
+                </div>
+            </div>
+            <div class="math-box p-4 rounded-lg border border-slate-200">
+                <h4 class="text-xs font-bold text-emerald-600 mb-2">语义匹配机制</h4>
+                <div class="text-sm overflow-x-auto text-slate-700">
+                    \[R_{BERT} = \frac{1}{|x|} \sum_{x_i \in x} \max_{\hat{x}_j \in \hat{x}} \mathbf{x}_i^\top \mathbf{\hat{x}}_j\]
+                    <p class="text-[10px] mt-2 text-slate-500">\(\mathbf{x}_i\): 词向量 | 通过贪婪匹配计算上下文语义余弦值</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const reference = "今天的天气真的很不错";
+        const cases = [
+            {
+                text: "今日的气候确实挺好的",
+                semantic: 0.94,
+                desc: "尽管词汇完全不同（同义词替换），但语义高度一致。<strong>BLEU 趋于 0</strong>，因为它无法识别未出现在参考文中的词汇。语义指标能识别向量空间的邻近性。"
+            },
+            {
+                text: "真的不错，今天的天气",
+                semantic: 0.96,
+                desc: "语序虽然剧烈变动，但核心意思不变。<strong>BLEU 大幅下降</strong>（高阶 n-gram 匹配失败），但语义指标表现出极强的鲁棒性。"
+            },
+            {
+                text: "今天的天气真滴不辍",
+                semantic: 0.82,
+                desc: "包含网络用语或谐音。字面匹配在‘真滴不辍’处断裂，而语义模型在训练中学习过相似的分布，仍能给出较高评价。"
+            },
+            {
+                text: "我喜欢在家里吃苹果",
+                semantic: 0.12,
+                desc: "主题完全无关。此时字面匹配与语义匹配达成共识，分数均处于极低水平。"
+            }
+        ];
+
+        function getNGrams(text, n) {
+            const grams = [];
+            for (let i = 0; i <= text.length - n; i++) {
+                grams.push(text.substring(i, i + n));
+            }
+            return grams;
+        }
+
+        function calculateBleuScore(ref, cand) {
+            // Standard Chinese Char-level BLEU
+            let precisions = [];
+            const weights = [0.25, 0.25, 0.25, 0.25];
+            
+            for (let n = 1; n <= 4; n++) {
+                const refGrams = getNGrams(ref, n);
+                const candGrams = getNGrams(cand, n);
+                if (candGrams.length === 0) {
+                    precisions.push(0);
+                    continue;
+                }
+                
+                const refCounts = {};
+                refGrams.forEach(g => refCounts[g] = (refCounts[g] || 0) + 1);
+                
+                let matches = 0;
+                const candCounts = {};
+                candGrams.forEach(g => candCounts[g] = (candCounts[g] || 0) + 1);
+                
+                Object.keys(candCounts).forEach(g => {
+                    if (refCounts[g]) {
+                        matches += Math.min(candCounts[g], refCounts[g]);
+                    }
+                });
+                
+                precisions.push(matches / candGrams.length);
+            }
+
+            // Smoothing for visualization (Small epsilon if 0 to keep the math visualization meaningful)
+            const logSum = precisions.reduce((sum, p, i) => sum + weights[i] * Math.log(p > 0 ? p : 1e-9), 0);
+            const geometricMean = Math.exp(logSum);
+            
+            // Brevity Penalty
+            const bp = cand.length > ref.length ? 1 : Math.exp(1 - ref.length / cand.length);
+            
+            const finalScore = bp * geometricMean;
+            return Math.max(0, finalScore * 100);
+        }
+
+        function updateComparison(index) {
+            const selected = cases[index];
+            const cards = document.querySelectorAll('.option-card');
+            
+            cards.forEach((c, i) => {
+                if(i === index) {
+                    c.classList.add('border-blue-500', 'ring-2', 'ring-blue-200', 'bg-blue-50');
+                } else {
+                    c.classList.remove('border-blue-500', 'ring-2', 'ring-blue-200', 'bg-blue-50');
+                }
+            });
+
+            const bleuScore = calculateBleuScore(reference, selected.text);
+            const semanticScore = selected.semantic * 100;
+
+            // Update UI
+            document.getElementById('bleu-val').innerText = bleuScore.toFixed(1);
+            document.getElementById('bleu-bar').style.width = `${bleuScore}%`;
+            
+            document.getElementById('semantic-val').innerText = semanticScore.toFixed(1);
+            document.getElementById('semantic-bar').style.width = `${semanticScore}%`;
+            
+            document.getElementById('logic-analysis').innerHTML = `
+                <p class="mb-2 font-bold text-slate-800">当前测试：${selected.text}</p>
+                <p>${selected.desc}</p>
+            `;
+        }
+
+        // Initialize
+        window.onload = () => updateComparison(0);
+    </script>
+</body>
+</html>
