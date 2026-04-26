@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据清洗参数调节 - 交互式学习</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .data-card { transition: all 0.3s ease; }
+        .filtered-out { opacity: 0.2; filter: grayscale(1); transform: scale(0.95); }
+        .duplicate-out { border: 2px dashed #ef4444; opacity: 0.4; }
+        .active-data { border: 2px solid #22c55e; box-shadow: 0 4px 6px -1px rgb(34 197 94 / 0.1); }
+        input[type=range] { accent-color: #3b82f6; }
+    </style>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    const katexOptions = {
+        delimiters: [
+            {left: '\\[', right: '\\]', display: true},
+            {left: '\\(', right: '\\)', display: false},
+            {left: '$$', right: '$$', display: true},
+            {left: '$', right: '$', display: false}
+        ],
+        throwOnError: false,
+        strict: false,
+        trust: true
+    };
+
+    let renderTimeout;
+    function safeRender() {
+        if (renderTimeout) clearTimeout(renderTimeout);
+        renderTimeout = setTimeout(() => {
+            renderMathInElement(document.body, katexOptions);
+        }, 100);
+    }
+
+    renderMathInElement(document.body, katexOptions);
+
+    const observer = new MutationObserver((mutations) => {
+        let shouldRender = false;
+        mutations.forEach((mutation) => {
+            if (mutation.target &&
+                mutation.target.className &&
+                typeof mutation.target.className === 'string' &&
+                mutation.target.className.includes('katex')) {
+                return;
+            }
+            shouldRender = true;
+        });
+
+        if (shouldRender) {
+            safeRender();
+        }
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true
+    });
+
+    setInterval(() => {
+        const text = document.body.innerText;
+        if (text.includes('\\(') || text.includes('$$')) {
+            safeRender();
+        }
+    }, 2000);
+});
+</script>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen font-sans">
+
+    <div class="max-w-6xl mx-auto p-4 md:p-8">
+        <!-- Header -->
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-bold text-slate-800">数据清洗参数调节预览</h1>
+            <p class="text-slate-500 mt-2">调节滑块以观察文本长度、质量分与去重阈值如何影响数据集的保留率与纯净度。</p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-8">
+            <!-- Control Panel -->
+            <div class="lg:col-span-1 space-y-8 bg-white p-6 rounded-2xl shadow-sm border border-slate-200 h-fit sticky top-8">
+                <div>
+                    <div class="flex justify-between items-center mb-2">
+                        <label class="text-sm font-semibold">最小长度过滤</label>
+                        <span id="val-length" class="text-blue-600 font-mono">0</span>
+                    </div>
+                    <input type="range" id="slider-length" min="0" max="100" value="10" class="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer">
+                    <p class="text-[10px] text-slate-400 mt-1">过滤掉过短的无意义短语或噪声</p>
+                </div>
+
+                <div>
+                    <div class="flex justify-between items-center mb-2">
+                        <label class="text-sm font-semibold text-amber-700">困惑度 (PPL) 上限</label>
+                        <span id="val-ppl" class="text-amber-600 font-mono">500</span>
+                    </div>
+                    <input type="range" id="slider-ppl" min="10" max="1000" value="800" class="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer">
+                    <p class="text-[10px] text-slate-400 mt-1">\(PPL\) 越低，文本越自然；值过低可能导致有效信息流失</p>
+                </div>
+
+                <div>
+                    <div class="flex justify-between items-center mb-2">
+                        <label class="text-sm font-semibold text-red-700">去重阈值 (Jaccard)</label>
+                        <span id="val-sim" class="text-red-600 font-mono">0.80</span>
+                    </div>
+                    <input type="range" id="slider-sim" min="0" max="1" step="0.01" value="0.9" class="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer">
+                    <p class="text-[10px] text-slate-400 mt-1">\(J(A, B)\) 超过此值时视为重复；值越小去重越激进</p>
+                </div>
+
+                <div class="pt-4 border-t border-slate-100">
+                    <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">实时统计指标</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span>数据保留率 \(R\)</span>
+                                <span id="stat-retention" class="font-bold">100%</span>
+                            </div>
+                            <div class="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                                <div id="bar-retention" class="bg-blue-500 h-full transition-all duration-500" style="width: 100%"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span>综合纯净度 \(Q\)</span>
+                                <span id="stat-purity" class="font-bold text-green-600">0%</span>
+                            </div>
+                            <div class="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                                <div id="bar-purity" class="bg-green-500 h-full transition-all duration-500" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Visualization Area -->
+            <div class="lg:col-span-3">
+                <div class="mb-4 flex items-center justify-between">
+                    <h2 class="text-lg font-bold">数据集预览 (Sample Pool)</h2>
+                    <div class="flex gap-4 text-xs">
+                        <span class="flex items-center gap-1"><span class="w-3 h-3 bg-green-500 rounded"></span> 保留</span>
+                        <span class="flex items-center gap-1"><span class="w-3 h-3 bg-slate-300 rounded"></span> 过滤</span>
+                        <span class="flex items-center gap-1"><span class="w-3 h-3 border border-red-400 rounded"></span> 重复</span>
+                    </div>
+                </div>
+                <div id="data-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <!-- JS generated cards -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Sample Data Pool
+        const dataset = [
+            { id: 1, text: "人工智能（AI）是计算机科学的一个分支，它企图了解智能的实质，并生产出一种新的能以人类智能相似的方式做出反应的智能机器。", len: 72, ppl: 15, group: 'a' },
+            { id: 2, text: "人工智能(AI)是计算机科学分支，旨在生产能以人类智能方式反应的智能机器。", len: 45, ppl: 18, group: 'a' }, // Similarity to 1
+            { id: 3, text: "今天天气不错。不错的天气。今天天气。", len: 18, ppl: 120, group: 'b' },
+            { id: 4, text: "asdfghjkl qwerty 123456 !!!", len: 26, ppl: 950, group: 'c' },
+            { id: 5, text: "深度学习是机器学习的一个子集，它基于人工神经网络进行表征学习。这种技术在计算机视觉和自然语言处理领域取得了巨大成功。", len: 65, ppl: 12, group: 'd' },
+            { id: 6, text: "深度学习是机器学习的一个子集，基于人工神经网络进行表征学习。在CV和NLP领域有巨大成功。", len: 50, ppl: 14, group: 'd' }, // Similarity to 5
+            { id: 7, text: "啊吧啊吧啊吧啊吧...", len: 10, ppl: 820, group: 'e' },
+            { id: 8, text: "这是一个非常短的句子。", len: 11, ppl: 45, group: 'f' },
+            { id: 9, text: "在大规模语言模型预训练过程中，数据清洗质量直接影响下游任务的表现。通过过滤低质量文本和去重，可以提升模型的泛化能力。", len: 68, ppl: 22, group: 'g' },
+            { id: 10, text: "在大规模语言模型预训练过程中，数据清洗质量直接影响下游任务的表现。过滤低质量文本可提升泛化。", len: 55, ppl: 25, group: 'g' }, // Similarity to 9
+            { id: 11, text: "购买链接：http://t.cn/xyz123 价格便宜，快来买啊！点击领取优惠券！", len: 38, ppl: 350, group: 'h' },
+            { id: 12, text: "文本数据工程包括：清洗、去重、分词、词性标注等步骤。", len: 30, ppl: 40, group: 'i' }
+        ];
+
+        // Jaccard similarity estimation between same-group items
+        function getSimilarity(a, b) {
+            if (a.group !== b.group) return 0;
+            // Simplified simulation logic for demo
+            const lenRatio = Math.min(a.len, b.len) / Math.max(a.len, b.len);
+            return 0.7 + (lenRatio * 0.3); 
+        }
+
+        const elements = {
+            grid: document.getElementById('data-grid'),
+            sliderLen: document.getElementById('slider-length'),
+            sliderPpl: document.getElementById('slider-ppl'),
+            sliderSim: document.getElementById('slider-sim'),
+            valLen: document.getElementById('val-length'),
+            valPpl: document.getElementById('val-ppl'),
+            valSim: document.getElementById('val-sim'),
+            statRetention: document.getElementById('stat-retention'),
+            statPurity: document.getElementById('stat-purity'),
+            barRetention: document.getElementById('bar-retention'),
+            barPurity: document.getElementById('bar-purity')
+        };
+
+        function renderData() {
+            elements.grid.innerHTML = '';
+            dataset.forEach(item => {
+                const card = document.createElement('div');
+                card.id = `card-${item.id}`;
+                card.className = 'data-card bg-white p-4 rounded-xl border border-slate-200 text-sm shadow-sm flex flex-col justify-between';
+                card.innerHTML = `
+                    <p class="text-slate-700 leading-relaxed mb-3">${item.text}</p>
+                    <div class="flex items-center gap-3 mt-auto pt-3 border-t border-slate-50 text-[10px] font-mono text-slate-400">
+                        <span title="长度">LEN: ${item.len}</span>
+                        <span title="困惑度">PPL: ${item.ppl}</span>
+                        <span class="status-icon ml-auto"></span>
+                    </div>
+                `;
+                elements.grid.appendChild(card);
+            });
+        }
+
+        function update() {
+            const minLen = parseInt(elements.sliderLen.value);
+            const maxPpl = parseInt(elements.sliderPpl.value);
+            const simThreshold = parseFloat(elements.sliderSim.value);
+
+            elements.valLen.innerText = minLen;
+            elements.valPpl.innerText = maxPpl;
+            elements.valSim.innerText = simThreshold.toFixed(2);
+
+            let keptCount = 0;
+            let totalPplSum = 0;
+            let seenGroups = new Set();
+
+            dataset.forEach(item => {
+                const card = document.getElementById(`card-${item.id}`);
+                const statusIcon = card.querySelector('.status-icon');
+                
+                // 1. Threshold Filtering (AND Logic)
+                const passesLen = item.len >= minLen;
+                const passesPpl = item.ppl <= maxPpl;
+                
+                let isDuplicate = false;
+                let filtered = !passesLen || !passesPpl;
+
+                // 2. Deduplication Logic
+                // If the item passes filters, check if we've seen a similar one
+                if (!filtered) {
+                    // Logic: Within groups, keep only the first one that appears if similarity is high
+                    const isSimilar = Array.from(seenGroups).some(g => g === item.group);
+                    // In a real scenario we'd calculate J(A, B) > simThreshold
+                    // Here we simulate it: If group matches and threshold is strict enough
+                    if (isSimilar && simThreshold < 0.95) {
+                        isDuplicate = true;
+                    }
+                }
+
+                // Apply Visuals
+                card.className = 'data-card bg-white p-4 rounded-xl border text-sm shadow-sm flex flex-col justify-between';
+                if (filtered) {
+                    card.classList.add('filtered-out');
+                    statusIcon.innerHTML = '❌ 过滤';
+                    statusIcon.className = 'status-icon ml-auto text-slate-400';
+                } else if (isDuplicate) {
+                    card.classList.add('duplicate-out');
+                    statusIcon.innerHTML = '👯 重复';
+                    statusIcon.className = 'status-icon ml-auto text-red-400 font-bold';
+                } else {
+                    card.classList.add('active-data');
+                    statusIcon.innerHTML = '✅ 保留';
+                    statusIcon.className = 'status-icon ml-auto text-green-500 font-bold';
+                    keptCount++;
+                    totalPplSum += item.ppl;
+                    seenGroups.add(item.group);
+                }
+            });
+
+            // Calculate Stats
+            const retention = (keptCount / dataset.length) * 100;
+            
+            // Purity Q calculation: Based on PPL improvement relative to average
+            // If keptCount is 0, purity is 0. 
+            let purity = 0;
+            if (keptCount > 0) {
+                const avgPpl = totalPplSum / keptCount;
+                // Higher PPL is worse. Normalize: 1000 PPL = 0%, 0 PPL = 100%
+                purity = Math.max(0, Math.min(100, 100 - (avgPpl / 10)));
+            }
+
+            // Update UI Stats
+            elements.statRetention.innerText = `${retention.toFixed(1)}%`;
+            elements.barRetention.style.width = `${retention}%`;
+            
+            elements.statPurity.innerText = `${purity.toFixed(1)}%`;
+            elements.barPurity.style.width = `${purity}%`;
+        }
+
+        // Listeners
+        [elements.sliderLen, elements.sliderPpl, elements.sliderSim].forEach(s => {
+            s.addEventListener('input', update);
+        });
+
+        // Init
+        renderData();
+        update();
+    </script>
+</body>
+</html>
