@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据污染与模型评估可视化</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #f8fafc; color: #1e293b; }
+        .slider-thumb::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            background: #3b82f6;
+            cursor: pointer;
+            border-radius: 50%;
+        }
+        canvas { touch-action: none; }
+    </style>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    const katexOptions = {
+        delimiters: [
+            {left: '\\[', right: '\\]', display: true},
+            {left: '\\(', right: '\\)', display: false},
+            {left: '$$', right: '$$', display: true},
+            {left: '$', right: '$', display: false}
+        ],
+        throwOnError: false,
+        strict: false,
+        trust: true
+    };
+
+    let renderTimeout;
+    function safeRender() {
+        if (renderTimeout) clearTimeout(renderTimeout);
+        renderTimeout = setTimeout(() => {
+            renderMathInElement(document.body, katexOptions);
+        }, 100);
+    }
+
+    renderMathInElement(document.body, katexOptions);
+
+    const observer = new MutationObserver((mutations) => {
+        let shouldRender = false;
+        mutations.forEach((mutation) => {
+            if (mutation.target &&
+                mutation.target.className &&
+                typeof mutation.target.className === 'string' &&
+                mutation.target.className.includes('katex')) {
+                return;
+            }
+            shouldRender = true;
+        });
+
+        if (shouldRender) {
+            safeRender();
+        }
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true
+    });
+
+    setInterval(() => {
+        const text = document.body.innerText;
+        if (text.includes('\\(') || text.includes('$$')) {
+            safeRender();
+        }
+    }, 2000);
+});
+</script>
+</head>
+<body class="p-4 md:p-8">
+    <div class="max-w-5xl mx-auto space-y-6">
+        <!-- Header -->
+        <header class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-slate-900 mb-2">数据污染 (Data Contamination) 与评估陷阱</h1>
+            <p class="text-slate-600">探究当训练集与测试集发生重叠时，模型表现如何产生“虚假繁荣”。</p>
+        </header>
+
+        <!-- Main Interactive Area -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+            
+            <!-- Left: Visualization -->
+            <div class="flex flex-col items-center space-y-6">
+                <div class="relative w-full h-64 flex items-center justify-center bg-slate-50 rounded-xl overflow-hidden border border-slate-100">
+                    <svg id="venn-diagram" width="400" height="240" viewBox="0 0 400 240">
+                        <!-- Definitions -->
+                        <defs>
+                            <clipPath id="overlap-clip">
+                                <circle id="test-clip" cx="260" cy="120" r="70" />
+                            </clipPath>
+                        </defs>
+                        <!-- Training Set -->
+                        <circle cx="140" cy="120" r="80" fill="#3b82f6" fill-opacity="0.2" stroke="#3b82f6" stroke-width="2" />
+                        <text x="90" y="50" fill="#2563eb" font-weight="bold" font-size="14">训练集 (Train)</text>
+                        
+                        <!-- Test Set -->
+                        <circle id="test-circle" cx="260" cy="120" r="70" fill="#ef4444" fill-opacity="0.2" stroke="#ef4444" stroke-width="2" />
+                        <text id="test-label" x="260" y="50" fill="#dc2626" font-weight="bold" font-size="14" text-anchor="middle">测试集 (Test)</text>
+                        
+                        <!-- Overlap Area -->
+                        <g clip-path="url(#overlap-clip)">
+                            <circle id="overlap-highlight" cx="140" cy="120" r="80" fill="#8b5cf6" fill-opacity="0.6" />
+                        </g>
+                    </svg>
+                    <div class="absolute bottom-4 left-4 text-xs text-slate-400">紫色区域代表数据污染部分</div>
+                </div>
+
+                <div class="w-full space-y-4">
+                    <div class="space-y-2">
+                        <div class="flex justify-between items-center">
+                            <label class="text-sm font-medium">数据污染率 \( \rho \)</label>
+                            <span id="rho-val" class="text-blue-600 font-bold text-lg">0%</span>
+                        </div>
+                        <input type="range" id="rho-slider" min="0" max="100" value="0" class="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer slider-thumb">
+                    </div>
+
+                    <div class="space-y-2">
+                        <div class="flex justify-between items-center">
+                            <label class="text-sm font-medium text-slate-500">模型基础泛化能力 \( Acc_{gen} \)</label>
+                            <span id="gen-val" class="text-slate-600 font-semibold">70%</span>
+                        </div>
+                        <input type="range" id="gen-slider" min="30" max="95" value="70" class="w-full h-2 bg-slate-100 rounded-lg appearance-none cursor-pointer slider-thumb accent-slate-400">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Chart and Metrics -->
+            <div class="flex flex-col space-y-6">
+                <div class="h-64 relative bg-slate-50 rounded-xl p-4 border border-slate-100">
+                    <canvas id="acc-chart" class="w-full h-full"></canvas>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4 text-center">
+                    <div class="p-4 bg-blue-50 rounded-xl border border-blue-100">
+                        <div class="text-xs text-blue-600 font-medium uppercase mb-1">观测准确率 \( Acc_{obs} \)</div>
+                        <div id="obs-score" class="text-3xl font-black text-blue-700">70.0%</div>
+                    </div>
+                    <div id="danger-box" class="p-4 bg-slate-50 rounded-xl border border-slate-200 transition-all duration-300">
+                        <div class="text-xs text-slate-500 font-medium uppercase mb-1">评估可信度</div>
+                        <div id="trust-label" class="text-3xl font-black text-slate-700">极高</div>
+                    </div>
+                </div>
+                
+                <div class="p-4 bg-yellow-50 border border-yellow-200 rounded-xl">
+                    <h3 class="text-sm font-bold text-yellow-800 mb-2">💡 核心原理：观测指标的分解</h3>
+                    <p class="text-xs text-yellow-700 leading-relaxed">
+                        \[ Acc_{obs} = (1 - \rho) \cdot Acc_{gen} + \rho \cdot Acc_{mem} \]
+                        当 \(\rho > 0\) 时，模型通过<strong>记忆效应</strong>（Memorization）而非推理获得高分。这种高分不具备泛化性，称为<strong>泛化边界塌缩</strong>。
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Warning Signs Section -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="p-4 bg-white rounded-lg border border-slate-200 shadow-sm">
+                <h4 class="font-bold text-sm mb-2 text-slate-800">1. 异常的高分</h4>
+                <p class="text-xs text-slate-600 italic">"如果一个在SOTA任务上很难达到90%的模型跑出了99%，警惕污染。"</p>
+            </div>
+            <div class="p-4 bg-white rounded-lg border border-slate-200 shadow-sm">
+                <h4 class="font-bold text-sm mb-2 text-slate-800">2. 训练/测试强相关</h4>
+                <p class="text-xs text-slate-600 italic">"测试集样本的特征映射在训练阶段已进入模型参数空间。"</p>
+            </div>
+            <div class="p-4 bg-white rounded-lg border border-slate-200 shadow-sm">
+                <h4 class="font-bold text-sm mb-2 text-slate-800">3. 查表式检索</h4>
+                <p class="text-xs text-slate-600 italic">"模型评估过程退化为查表，丧失处理未知数据的能力。"</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const rhoSlider = document.getElementById('rho-slider');
+        const genSlider = document.getElementById('gen-slider');
+        const rhoValDisp = document.getElementById('rho-val');
+        const genValDisp = document.getElementById('gen-val');
+        const obsScoreDisp = document.getElementById('obs-score');
+        const testCircle = document.getElementById('test-circle');
+        const testClip = document.getElementById('test-clip');
+        const testLabel = document.getElementById('test-label');
+        const dangerBox = document.getElementById('danger-box');
+        const trustLabel = document.getElementById('trust-label');
+        const canvas = document.getElementById('acc-chart');
+        const ctx = canvas.getContext('2d');
+
+        // Scientific Constraints
+        const ACC_MEM = 0.995; // Memorization accuracy is nearly perfect
+
+        function update() {
+            const rho = parseInt(rhoSlider.value) / 100;
+            const accGen = parseInt(genSlider.value) / 100;
+            
+            // Formula: Acc_obs = (1 - rho) * Acc_gen + rho * Acc_mem
+            const accObs = (1 - rho) * accGen + rho * ACC_MEM;
+
+            // Update UI Text
+            rhoValDisp.textContent = `${(rho * 100).toFixed(0)}%`;
+            genValDisp.textContent = `${(accGen * 100).toFixed(0)}%`;
+            obsScoreDisp.textContent = `${(accObs * 100).toFixed(1)}%`;
+
+            // Update Venn Diagram (Visual Overlap)
+            // Range: 260 (0% overlap) to 140 (approx 100% overlap visually)
+            const baseX = 260;
+            const targetX = 140;
+            const currentX = baseX - (rho * (baseX - targetX));
+            testCircle.setAttribute('cx', currentX);
+            testClip.setAttribute('cx', currentX);
+            testLabel.setAttribute('x', currentX);
+
+            // Update Trust Level and Styling
+            if (rho < 0.05) {
+                trustLabel.textContent = "极高";
+                trustLabel.className = "text-3xl font-black text-green-600";
+                dangerBox.className = "p-4 bg-green-50 rounded-xl border border-green-200";
+            } else if (rho < 0.2) {
+                trustLabel.textContent = "可疑";
+                trustLabel.className = "text-3xl font-black text-yellow-600";
+                dangerBox.className = "p-4 bg-yellow-50 rounded-xl border border-yellow-200";
+            } else {
+                trustLabel.textContent = "极低";
+                trustLabel.className = "text-3xl font-black text-red-600";
+                dangerBox.className = "p-4 bg-red-50 rounded-xl border border-red-200 animate-pulse";
+            }
+
+            drawChart(rho, accGen);
+        }
+
+        function drawChart(currentRho, accGen) {
+            const w = canvas.width = canvas.offsetWidth * window.devicePixelRatio;
+            const h = canvas.height = canvas.offsetHeight * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+            const cw = canvas.offsetWidth;
+            const ch = canvas.offsetHeight;
+            const padding = 35;
+
+            // Clear
+            ctx.clearRect(0, 0, cw, ch);
+
+            // Axes
+            ctx.beginPath();
+            ctx.strokeStyle = '#94a3b8';
+            ctx.lineWidth = 1;
+            ctx.moveTo(padding, 10);
+            ctx.lineTo(padding, ch - padding);
+            ctx.lineTo(cw - 10, ch - padding);
+            ctx.stroke();
+
+            // Labels
+            ctx.fillStyle = '#64748b';
+            ctx.font = '10px sans-serif';
+            ctx.fillText('Acc', 5, 15);
+            ctx.fillText('ρ (%)', cw - 30, ch - 10);
+            ctx.fillText('0', padding - 15, ch - padding + 5);
+            ctx.fillText('100', cw - 30, ch - padding + 15);
+
+            // Draw full curve
+            ctx.beginPath();
+            ctx.strokeStyle = '#3b82f6';
+            ctx.lineWidth = 3;
+            for (let r = 0; r <= 1.01; r += 0.05) {
+                const x = padding + r * (cw - padding - 20);
+                const acc = (1 - r) * accGen + r * ACC_MEM;
+                const y = (ch - padding) - acc * (ch - padding - 20);
+                if (r === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+
+            // Baseline indicator (clean performance)
+            ctx.setLineDash([4, 4]);
+            ctx.strokeStyle = '#cbd5e1';
+            const cleanY = (ch - padding) - accGen * (ch - padding - 20);
+            ctx.beginPath();
+            ctx.moveTo(padding, cleanY);
+            ctx.lineTo(cw - 20, cleanY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillText('真实泛化能力', cw - 70, cleanY - 5);
+
+            // Current point
+            const px = padding + currentRho * (cw - padding - 20);
+            const py = (ch - padding) - ((1 - currentRho) * accGen + currentRho * ACC_MEM) * (ch - padding - 20);
+            
+            ctx.beginPath();
+            ctx.fillStyle = currentRho > 0.1 ? '#ef4444' : '#3b82f6';
+            ctx.arc(px, py, 6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+
+        rhoSlider.addEventListener('input', update);
+        genSlider.addEventListener('input', update);
+        window.addEventListener('resize', update);
+
+        // Initial update
+        update();
+    </script>
+</body>
+</html>
