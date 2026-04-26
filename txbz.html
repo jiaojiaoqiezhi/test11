@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>图像目标检测标注交互学习</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        canvas { cursor: crosshair; touch-action: none; }
+        .tool-active { border-color: #3b82f6; background-color: #eff6ff; }
+        .hidden-canvas { display: none; }
+    </style>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    const katexOptions = {
+        delimiters: [
+            {left: '\\[', right: '\\]', display: true},
+            {left: '\\(', right: '\\)', display: false},
+            {left: '$$', right: '$$', display: true},
+            {left: '$', right: '$', display: false}
+        ],
+        throwOnError: false,
+        strict: false,
+        trust: true
+    };
+
+    let renderTimeout;
+    function safeRender() {
+        if (renderTimeout) clearTimeout(renderTimeout);
+        renderTimeout = setTimeout(() => {
+            renderMathInElement(document.body, katexOptions);
+        }, 100);
+    }
+
+    renderMathInElement(document.body, katexOptions);
+
+    const observer = new MutationObserver((mutations) => {
+        let shouldRender = false;
+        mutations.forEach((mutation) => {
+            if (mutation.target &&
+                mutation.target.className &&
+                typeof mutation.target.className === 'string' &&
+                mutation.target.className.includes('katex')) {
+                return;
+            }
+            shouldRender = true;
+        });
+
+        if (shouldRender) {
+            safeRender();
+        }
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true
+    });
+
+    setInterval(() => {
+        const text = document.body.innerText;
+        if (text.includes('\\(') || text.includes('$$')) {
+            safeRender();
+        }
+    }, 2000);
+});
+</script>
+</head>
+<body class="bg-slate-50 min-h-screen flex flex-col font-sans text-slate-900">
+
+    <!-- Header -->
+    <header class="bg-white border-b px-6 py-4 flex justify-between items-center shadow-sm">
+        <div>
+            <h1 class="text-xl font-bold text-slate-800">图像目标检测标注系统</h1>
+            <p class="text-xs text-slate-500 font-medium">交互式理解：\(IoU\)、矩形框与多边形分割</p>
+        </div>
+        <div class="flex gap-4 items-center">
+            <div id="stats-panel" class="flex gap-4 text-sm bg-slate-100 px-4 py-2 rounded-lg border border-slate-200">
+                <span>耗时: <span id="timer" class="font-mono font-bold">0.0s</span></span>
+                <span>IoU: <span id="iou-val" class="font-mono font-bold text-blue-600">0%</span></span>
+            </div>
+            <button id="reset-btn" class="bg-slate-200 hover:bg-slate-300 px-4 py-2 rounded transition text-sm">重置</button>
+        </div>
+    </header>
+
+    <main class="flex-1 flex overflow-hidden">
+        <!-- Sidebar Controls -->
+        <aside class="w-72 bg-white border-r p-6 flex flex-col gap-6 overflow-y-auto">
+            <div>
+                <h3 class="text-sm font-semibold mb-3 text-slate-600 uppercase tracking-wider">选择任务</h3>
+                <div class="space-y-2">
+                    <button id="task-1" class="w-full text-left px-4 py-3 rounded-lg border-2 transition hover:border-blue-400 focus:outline-none task-btn" onclick="setTask(1)">
+                        <div class="font-bold">1. 基础矩形标注</div>
+                        <div class="text-xs text-slate-500">标注图中的蓝色卡车</div>
+                    </button>
+                    <button id="task-2" class="w-full text-left px-4 py-3 rounded-lg border-2 transition hover:border-blue-400 focus:outline-none task-btn" onclick="setTask(2)">
+                        <div class="font-bold">2. 遮挡处理 (Amodal)</div>
+                        <div class="text-xs text-slate-500">标注树后的行人(需推断全貌)</div>
+                    </button>
+                    <button id="task-3" class="w-full text-left px-4 py-3 rounded-lg border-2 transition hover:border-blue-400 focus:outline-none task-btn" onclick="setTask(3)">
+                        <div class="font-bold">3. 精细多边形</div>
+                        <div class="text-xs text-slate-500">高精度标注自行车轮廓</div>
+                    </button>
+                </div>
+            </div>
+
+            <div>
+                <h3 class="text-sm font-semibold mb-3 text-slate-600 uppercase tracking-wider">标注工具</h3>
+                <div class="flex gap-2">
+                    <button id="tool-box" class="flex-1 py-3 border-2 rounded-lg flex flex-col items-center gap-1 transition" onclick="setTool('box')">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v14a1 1 0 01-1 1H5a1 1 0 01-1-1V5z"></path></svg>
+                        <span class="text-xs font-bold">矩形框</span>
+                    </button>
+                    <button id="tool-poly" class="flex-1 py-3 border-2 rounded-lg flex flex-col items-center gap-1 transition" onclick="setTool('poly')">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7l3-3 5 5-5 5-3-3m0 0l-3 3-3-3 3-3"></path></svg>
+                        <span class="text-xs font-bold">多边形</span>
+                    </button>
+                </div>
+                <p class="mt-2 text-[10px] text-slate-400">多边形：点击放置顶点，双击或点击起始点闭合。</p>
+            </div>
+
+            <div class="mt-auto bg-blue-50 p-4 rounded-xl border border-blue-100">
+                <h4 class="text-xs font-bold text-blue-800 mb-2">标注指南</h4>
+                <ul class="text-[11px] text-blue-700 space-y-2 leading-relaxed">
+                    <li>• <b>紧密性：</b> 边界框需严丝合缝地包围目标像素。</li>
+                    <li>• <b>效率：</b> \(Efficiency = IoU / Time\)。多边形精度高但更耗时。</li>
+                    <li>• <b>拓扑规则：</b> 多边形不可自相交且不少于3个点。</li>
+                </ul>
+            </div>
+        </aside>
+
+        <!-- Canvas Area -->
+        <section class="flex-1 bg-slate-200 p-8 flex flex-col items-center justify-center relative overflow-hidden">
+            <div id="canvas-container" class="relative shadow-2xl bg-white leading-[0]">
+                <canvas id="image-canvas" class="absolute top-0 left-0 pointer-events-none"></canvas>
+                <canvas id="ui-canvas" class="relative z-10"></canvas>
+            </div>
+
+            <!-- Result Overlay -->
+            <div id="evaluation-card" class="absolute bottom-10 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur shadow-lg border p-4 rounded-2xl w-80 scale-0 transition-transform">
+                <div class="text-center">
+                    <h4 class="font-bold text-slate-800 mb-2">标注结果评估</h4>
+                    <div class="grid grid-cols-2 gap-2 text-sm mb-4">
+                        <div class="bg-slate-50 p-2 rounded">
+                            <div class="text-slate-500 text-[10px]">交并比 IoU</div>
+                            <div id="res-iou" class="text-lg font-bold text-blue-600">0%</div>
+                        </div>
+                        <div class="bg-slate-50 p-2 rounded">
+                            <div class="text-slate-500 text-[10px]">综合效率</div>
+                            <div id="res-eff" class="text-lg font-bold text-green-600">0.0</div>
+                        </div>
+                    </div>
+                    <button onclick="hideEvaluation()" class="w-full bg-slate-800 text-white py-2 rounded-lg text-sm hover:bg-slate-700">继续改进</button>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Hidden calculation canvases -->
+    <canvas id="gt-mask" class="hidden-canvas"></canvas>
+    <canvas id="user-mask" class="hidden-canvas"></canvas>
+
+    <script>
+        const uiCanvas = document.getElementById('ui-canvas');
+        const imgCanvas = document.getElementById('image-canvas');
+        const gtMaskCanvas = document.getElementById('gt-mask');
+        const userMaskCanvas = document.getElementById('user-mask');
+        
+        const uiCtx = uiCanvas.getContext('2d');
+        const imgCtx = imgCanvas.getContext('2d');
+        const gtCtx = gtMaskCanvas.getContext('2d');
+        const userCtx = userMaskCanvas.getContext('2d');
+
+        const state = {
+            width: 800,
+            height: 500,
+            currentTask: 1,
+            currentTool: 'box',
+            isDrawing: false,
+            points: [], // For poly or [x1, y1, x2, y2] for box
+            startTime: null,
+            elapsedTime: 0,
+            timerId: null,
+            completed: false,
+            // Ground Truths
+            targets: {
+                1: { // Truck
+                    type: 'box',
+                    rect: [150, 180, 500, 420],
+                    label: '卡车',
+                    points: [[150,180], [500,180], [500,420], [150,420]]
+                },
+                2: { // Person partially hidden
+                    type: 'box',
+                    rect: [580, 160, 680, 450],
+                    label: '行人 (需预测完整轮廓)',
+                    points: [[580,160], [680,160], [680,450], [580,450]]
+                },
+                3: { // Bicycle (Complex)
+                    type: 'poly',
+                    points: [[200,450], [250,380], [350,370], [450,380], [500,450], [480,480], [220,480]],
+                    label: '自行车'
+                }
+            }
+        };
+
+        function init() {
+            uiCanvas.width = imgCanvas.width = gtMaskCanvas.width = userMaskCanvas.width = state.width;
+            uiCanvas.height = imgCanvas.height = gtMaskCanvas.height = userMaskCanvas.height = state.height;
+            setTask(1);
+            setTool('box');
+            requestAnimationFrame(drawLoop);
+            
+            uiCanvas.addEventListener('mousedown', startDrawing);
+            uiCanvas.addEventListener('mousemove', updateDrawing);
+            window.addEventListener('mouseup', endDrawing);
+            uiCanvas.addEventListener('dblclick', finalizePoly);
+            document.getElementById('reset-btn').addEventListener('click', resetCurrent);
+        }
+
+        function setTask(id) {
+            state.currentTask = id;
+            state.points = [];
+            state.isDrawing = false;
+            state.completed = false;
+            state.startTime = null;
+            state.elapsedTime = 0;
+            hideEvaluation();
+            
+            document.querySelectorAll('.task-btn').forEach((btn, i) => {
+                btn.classList.toggle('tool-active', (i+1) === id);
+            });
+            
+            renderStaticScene();
+            drawGTMask();
+            updateStats(0);
+        }
+
+        function setTool(tool) {
+            state.currentTool = tool;
+            state.points = [];
+            document.getElementById('tool-box').classList.toggle('tool-active', tool === 'box');
+            document.getElementById('tool-poly').classList.toggle('tool-active', tool === 'poly');
+        }
+
+        function renderStaticScene() {
+            imgCtx.clearRect(0, 0, state.width, state.height);
+            
+            // Background (Road/Sky)
+            const grad = imgCtx.createLinearGradient(0,0,0,state.height);
+            grad.addColorStop(0, '#bae6fd');
+            grad.addColorStop(0.6, '#f8fafc');
+            grad.addColorStop(0.6, '#94a3b8');
+            grad.addColorStop(1, '#64748b');
+            imgCtx.fillStyle = grad;
+            imgCtx.fillRect(0,0,state.width, state.height);
+
+            // Task 1: Truck
+            imgCtx.fillStyle = '#2563eb';
+            imgCtx.fillRect(150, 240, 350, 150); // Body
+            imgCtx.fillStyle = '#1e3a8a';
+            imgCtx.fillRect(400, 200, 100, 190); // Cabin
+            imgCtx.fillStyle = '#334155';
+            imgCtx.beginPath();
+            imgCtx.arc(220, 390, 35, 0, Math.PI*2);
+            imgCtx.arc(430, 390, 35, 0, Math.PI*2);
+            imgCtx.fill();
+
+            // Task 2: Tree and Occluded Person
+            // Person behind
+            imgCtx.fillStyle = '#ef4444';
+            imgCtx.fillRect(600, 280, 50, 120); // Only visible middle part
+            imgCtx.beginPath();
+            imgCtx.arc(625, 250, 20, 0, Math.PI*2);
+            imgCtx.fill();
+            
+            // Tree (The occluder)
+            imgCtx.fillStyle = '#78350f';
+            imgCtx.fillRect(610, 100, 30, 400);
+            imgCtx.fillStyle = '#15803d';
+            imgCtx.beginPath();
+            imgCtx.arc(625, 150, 80, 0, Math.PI*2);
+            imgCtx.fill();
+
+            // Task 3: Bike Shape (Simplified)
+            imgCtx.strokeStyle = '#0f172a';
+            imgCtx.lineWidth = 8;
+            imgCtx.beginPath();
+            imgCtx.arc(280, 430, 45, 0, Math.PI*2);
+            imgCtx.stroke();
+            imgCtx.beginPath();
+            imgCtx.arc(420, 430, 45, 0, Math.PI*2);
+            imgCtx.stroke();
+            imgCtx.beginPath();
+            imgCtx.moveTo(280, 430);
+            imgCtx.lineTo(350, 380);
+            imgCtx.lineTo(420, 430);
+            imgCtx.stroke();
+        }
+
+        function drawGTMask() {
+            gtCtx.clearRect(0,0, state.width, state.height);
+            gtCtx.fillStyle = 'white';
+            const target = state.targets[state.currentTask];
+            
+            gtCtx.beginPath();
+            if(target.type === 'box') {
+                const r = target.rect;
+                gtCtx.rect(r[0], r[1], r[2]-r[0], r[3]-r[1]);
+            } else {
+                gtCtx.moveTo(target.points[0][0], target.points[0][1]);
+                target.points.forEach(p => gtCtx.lineTo(p[0], p[1]));
+            }
+            gtCtx.closePath();
+            gtCtx.fill();
+        }
+
+        function startDrawing(e) {
+            if(state.completed) return;
+            const rect = uiCanvas.getBoundingClientRect();
+            const x = Math.max(0, Math.min(state.width, e.clientX - rect.left));
+            const y = Math.max(0, Math.min(state.height, e.clientY - rect.top));
+
+            if(!state.startTime) {
+                state.startTime = Date.now();
+                state.timerId = setInterval(() => {
+                    state.elapsedTime = (Date.now() - state.startTime) / 1000;
+                    document.getElementById('timer').innerText = state.elapsedTime.toFixed(1) + 's';
+                }, 100);
+            }
+
+            if(state.currentTool === 'box') {
+                state.isDrawing = true;
+                state.points = [x, y, x, y];
+            } else {
+                // Polygon logic
+                if(state.points.length > 0) {
+                    const first = state.points[0];
+                    const dist = Math.hypot(x - first[0], y - first[1]);
+                    if(dist < 15 && state.points.length >= 3) {
+                        finalizePoly();
+                        return;
+                    }
+                }
+                state.points.push([x, y]);
+            }
+        }
+
+        function updateDrawing(e) {
+            if(state.completed) return;
+            const rect = uiCanvas.getBoundingClientRect();
+            const x = Math.max(0, Math.min(state.width, e.clientX - rect.left));
+            const y = Math.max(0, Math.min(state.height, e.clientY - rect.top));
+
+            if(state.currentTool === 'box' && state.isDrawing) {
+                state.points[2] = x;
+                state.points[3] = y;
+                calculateLiveIoU();
+            }
+        }
+
+        function endDrawing() {
+            if(state.currentTool === 'box' && state.isDrawing) {
+                state.isDrawing = false;
+                completeAnnotation();
+            }
+        }
+
+        function finalizePoly() {
+            if(state.currentTool === 'poly' && state.points.length >= 3) {
+                if(isSelfIntersecting(state.points)) {
+                    alert("多边形边界自相交！请重新标注以符合几何有效性约束。");
+                    state.points = [];
+                    return;
+                }
+                completeAnnotation();
+            }
+        }
+
+        function isSelfIntersecting(pts) {
+            // Basic intersection check for polygon edges
+            const n = pts.length;
+            if(n < 4) return false;
+            for(let i=0; i<n; i++) {
+                for(let j=i+2; j<n; j++) {
+                    if(i === 0 && j === n-1) continue;
+                    if(intersect(pts[i], pts[(i+1)%n], pts[j], pts[(j+1)%n])) return true;
+                }
+            }
+            return false;
+        }
+
+        function intersect(p1, p2, p3, p4) {
+            function ccw(a, b, c) { return (c[1]-a[1])*(b[0]-a[0]) > (b[1]-a[1])*(c[0]-a[0]); }
+            return ccw(p1,p3,p4) !== ccw(p2,p3,p4) && ccw(p1,p2,p3) !== ccw(p1,p2,p4);
+        }
+
+        function calculateLiveIoU() {
+            userCtx.clearRect(0,0, state.width, state.height);
+            userCtx.fillStyle = 'white';
+            userCtx.beginPath();
+            if(state.currentTool === 'box') {
+                const [x1, y1, x2, y2] = state.points;
+                userCtx.rect(Math.min(x1,x2), Math.min(y1,y2), Math.abs(x2-x1), Math.abs(y2-y1));
+            } else {
+                if(state.points.length < 2) return;
+                userCtx.moveTo(state.points[0][0], state.points[0][1]);
+                state.points.forEach(p => userCtx.lineTo(p[0], p[1]));
+            }
+            userCtx.fill();
+
+            const gtData = gtCtx.getImageData(0,0,state.width,state.height).data;
+            const userData = userCtx.getImageData(0,0,state.width,state.height).data;
+            
+            let intersection = 0;
+            let union = 0;
+
+            for(let i=0; i<gtData.length; i+=4) {
+                const g = gtData[i] > 128;
+                const u = userData[i] > 128;
+                if(g && u) intersection++;
+                if(g || u) union++;
+            }
+
+            const iou = union === 0 ? 0 : intersection / union;
+            updateStats(iou);
+            return iou;
+        }
+
+        function updateStats(iou) {
+            const iouPercent = (iou * 100).toFixed(1) + '%';
+            document.getElementById('iou-val').innerText = iouPercent;
+            document.getElementById('res-iou').innerText = iouPercent;
+            
+            const efficiency = state.elapsedTime > 0 ? (iou * 100 / state.elapsedTime).toFixed(2) : "0.00";
+            document.getElementById('res-eff').innerText = efficiency;
+        }
+
+        function completeAnnotation() {
+            state.completed = true;
+            clearInterval(state.timerId);
+            const finalIoU = calculateLiveIoU();
+            showEvaluation();
+        }
+
+        function showEvaluation() {
+            document.getElementById('evaluation-card').classList.remove('scale-0');
+            document.getElementById('evaluation-card').classList.add('scale-100');
+        }
+
+        function hideEvaluation() {
+            document.getElementById('evaluation-card').classList.remove('scale-100');
+            document.getElementById('evaluation-card').classList.add('scale-0');
+        }
+
+        function resetCurrent() {
+            state.points = [];
+            state.isDrawing = false;
+            state.completed = false;
+            state.startTime = null;
+            state.elapsedTime = 0;
+            clearInterval(state.timerId);
+            document.getElementById('timer').innerText = '0.0s';
+            updateStats(0);
+            hideEvaluation();
+        }
+
+        function drawLoop() {
+            uiCtx.clearRect(0, 0, state.width, state.height);
+            
+            // Draw Ground Truth hint (dashed)
+            const target = state.targets[state.currentTask];
+            uiCtx.setLineDash([5, 5]);
+            uiCtx.strokeStyle = 'rgba(0,0,0,0.2)';
+            uiCtx.lineWidth = 1;
+            uiCtx.beginPath();
+            if(target.type === 'box') {
+                const r = target.rect;
+                uiCtx.strokeRect(r[0], r[1], r[2]-r[0], r[3]-r[1]);
+            } else {
+                uiCtx.moveTo(target.points[0][0], target.points[0][1]);
+                target.points.forEach(p => uiCtx.lineTo(p[0], p[1]));
+                uiCtx.closePath();
+                uiCtx.stroke();
+            }
+
+            // Draw User Annotation
+            uiCtx.setLineDash([]);
+            uiCtx.lineWidth = 2;
+            uiCtx.strokeStyle = '#3b82f6';
+            uiCtx.fillStyle = 'rgba(59, 130, 246, 0.2)';
+
+            if(state.currentTool === 'box' && state.points.length === 4) {
+                const [x1, y1, x2, y2] = state.points;
+                const rx = Math.min(x1, x2);
+                const ry = Math.min(y1, y2);
+                const rw = Math.abs(x2 - x1);
+                const rh = Math.abs(y2 - y1);
+                uiCtx.fillRect(rx, ry, rw, rh);
+                uiCtx.strokeRect(rx, ry, rw, rh);
+                
+                // Labels
+                uiCtx.fillStyle = '#3b82f6';
+                uiCtx.fillRect(rx, ry - 20, 60, 20);
+                uiCtx.fillStyle = 'white';
+                uiCtx.font = 'bold 10px sans-serif';
+                uiCtx.fillText('BOX', rx + 5, ry - 6);
+            } else if(state.currentTool === 'poly' && state.points.length > 0) {
+                uiCtx.beginPath();
+                uiCtx.moveTo(state.points[0][0], state.points[0][1]);
+                state.points.forEach(p => uiCtx.lineTo(p[0], p[1]));
+                
+                if(state.completed) {
+                    uiCtx.closePath();
+                    uiCtx.fill();
+                }
+                uiCtx.stroke();
+                
+                // Draw vertices
+                state.points.forEach((p, i) => {
+                    uiCtx.fillStyle = i === 0 ? '#ef4444' : '#3b82f6';
+                    uiCtx.beginPath();
+                    uiCtx.arc(p[0], p[1], 4, 0, Math.PI*2);
+                    uiCtx.fill();
+                });
+            }
+
+            requestAnimationFrame(drawLoop);
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
