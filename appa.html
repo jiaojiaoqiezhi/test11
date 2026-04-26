@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kappa系数计算模拟器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .matrix-input {
+            @apply w-full text-center p-2 border-2 border-slate-200 rounded-md focus:border-blue-500 focus:outline-none transition-colors text-lg font-mono;
+        }
+        .matrix-label {
+            @apply text-sm text-slate-500 font-medium text-center;
+        }
+        .result-card {
+            @apply bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex flex-col items-center;
+        }
+        .math-font {
+            font-family: 'Times New Roman', serif;
+        }
+    </style>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    const katexOptions = {
+        delimiters: [
+            {left: '\\[', right: '\\]', display: true},
+            {left: '\\(', right: '\\)', display: false},
+            {left: '$$', right: '$$', display: true},
+            {left: '$', right: '$', display: false}
+        ],
+        throwOnError: false,
+        strict: false,
+        trust: true
+    };
+
+    let renderTimeout;
+    function safeRender() {
+        if (renderTimeout) clearTimeout(renderTimeout);
+        renderTimeout = setTimeout(() => {
+            renderMathInElement(document.body, katexOptions);
+        }, 100);
+    }
+
+    renderMathInElement(document.body, katexOptions);
+
+    const observer = new MutationObserver((mutations) => {
+        let shouldRender = false;
+        mutations.forEach((mutation) => {
+            if (mutation.target &&
+                mutation.target.className &&
+                typeof mutation.target.className === 'string' &&
+                mutation.target.className.includes('katex')) {
+                return;
+            }
+            shouldRender = true;
+        });
+
+        if (shouldRender) {
+            safeRender();
+        }
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true
+    });
+
+    setInterval(() => {
+        const text = document.body.innerText;
+        if (text.includes('\\(') || text.includes('$$')) {
+            safeRender();
+        }
+    }, 2000);
+});
+</script>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto">
+        <!-- Header -->
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-bold text-slate-800 mb-2">Kappa 系数计算模拟器</h1>
+            <p class="text-slate-600">通过调整混淆矩阵，理解随机一致性 \(P_e\) 对评估准确度的影响</p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            
+            <!-- Left: Input Matrix -->
+            <section class="bg-white p-6 rounded-2xl shadow-md border border-slate-200">
+                <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                    <span class="w-2 h-6 bg-blue-500 rounded-full"></span>
+                    2×2 混淆矩阵 (频数)
+                </h2>
+                
+                <div class="grid grid-cols-4 gap-2 mb-6">
+                    <!-- Header -->
+                    <div class=""></div>
+                    <div class="matrix-label">预测类 1</div>
+                    <div class="matrix-label">预测类 2</div>
+                    <div class="matrix-label text-blue-600">行总计</div>
+
+                    <!-- Row 1 -->
+                    <div class="matrix-label flex items-center justify-center">实际类 1</div>
+                    <div><input type="number" id="cell-a" class="matrix-input" value="40" min="0"></div>
+                    <div><input type="number" id="cell-b" class="matrix-input" value="10" min="0"></div>
+                    <div id="row-1-sum" class="flex items-center justify-center font-bold text-slate-600">50</div>
+
+                    <!-- Row 2 -->
+                    <div class="matrix-label flex items-center justify-center">实际类 2</div>
+                    <div><input type="number" id="cell-c" class="matrix-input" value="5" min="0"></div>
+                    <div><input type="number" id="cell-d" class="matrix-input" value="45" min="0"></div>
+                    <div id="row-2-sum" class="flex items-center justify-center font-bold text-slate-600">50</div>
+
+                    <!-- Footer -->
+                    <div class="matrix-label text-blue-600 flex items-center justify-center">列总计</div>
+                    <div id="col-1-sum" class="flex items-center justify-center font-bold text-slate-600">45</div>
+                    <div id="col-2-sum" class="flex items-center justify-center font-bold text-slate-600">55</div>
+                    <div id="total-n" class="bg-blue-50 flex items-center justify-center font-bold text-blue-600 rounded-md">100</div>
+                </div>
+
+                <div class="flex flex-wrap gap-2">
+                    <button onclick="setPreset(45, 5, 5, 45)" class="px-3 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded-full transition-colors">理想状态</button>
+                    <button onclick="setPreset(25, 25, 25, 25)" class="px-3 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded-full transition-colors">完全随机</button>
+                    <button onclick="setPreset(90, 10, 0, 0)" class="px-3 py-1 text-xs bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 rounded-full transition-colors font-medium">极度不平衡 (悖论演示)</button>
+                </div>
+            </section>
+
+            <!-- Right: Results -->
+            <section class="space-y-6">
+                <!-- Main Stats -->
+                <div class="grid grid-cols-3 gap-4">
+                    <div class="result-card">
+                        <span class="text-xs text-slate-500 mb-1">观察一致性 \(P_o\)</span>
+                        <span id="res-po" class="text-2xl font-bold text-slate-800">0.850</span>
+                    </div>
+                    <div class="result-card">
+                        <span class="text-xs text-slate-500 mb-1">随机一致性 \(P_e\)</span>
+                        <span id="res-pe" class="text-2xl font-bold text-slate-800">0.500</span>
+                    </div>
+                    <div class="result-card bg-blue-50 border-blue-100">
+                        <span class="text-xs text-blue-600 mb-1 font-bold">Kappa (\(\kappa\))</span>
+                        <span id="res-kappa" class="text-2xl font-bold text-blue-700">0.700</span>
+                    </div>
+                </div>
+
+                <!-- Visualization -->
+                <div class="bg-white p-6 rounded-2xl shadow-md border border-slate-200">
+                    <h2 class="text-sm font-semibold mb-4 text-slate-600">指标对比图示</h2>
+                    <div class="space-y-4">
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span>准确率 (Po)</span>
+                                <span id="bar-po-val">85%</span>
+                            </div>
+                            <div class="w-full bg-slate-100 h-3 rounded-full overflow-hidden">
+                                <div id="bar-po" class="bg-emerald-400 h-full transition-all duration-500" style="width: 85%"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span>随机概率效应 (Pe)</span>
+                                <span id="bar-pe-val">50%</span>
+                            </div>
+                            <div class="w-full bg-slate-100 h-3 rounded-full overflow-hidden">
+                                <div id="bar-pe" class="bg-slate-400 h-full transition-all duration-500" style="width: 50%"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1 font-bold text-blue-600">
+                                <span>实际 Kappa 收益</span>
+                                <span id="bar-kappa-val">0.70</span>
+                            </div>
+                            <div class="w-full bg-slate-100 h-6 rounded-md overflow-hidden relative">
+                                <div id="bar-kappa" class="bg-blue-500 h-full transition-all duration-500" style="width: 70%"></div>
+                                <div class="absolute inset-0 flex items-center justify-center text-[10px] text-white font-bold opacity-50">KAPPA VALUE</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Interpretation -->
+                <div id="insight-box" class="p-4 rounded-xl bg-blue-50 border border-blue-100 text-sm text-blue-800 leading-relaxed">
+                    调整矩阵数值来观察数据变化。
+                </div>
+            </section>
+        </div>
+
+        <!-- Formulas -->
+        <footer class="mt-8 bg-white p-6 rounded-2xl shadow-md border border-slate-200">
+            <h3 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4">核心公式计算过程</h3>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-sm">
+                <div>
+                    <div class="text-slate-500 mb-2">1. 观察一致性率</div>
+                    <div class="p-2 bg-slate-50 rounded">
+                        \[P_o = \frac{a + d}{N}\]
+                    </div>
+                </div>
+                <div>
+                    <div class="text-slate-500 mb-2">2. 随机一致性率</div>
+                    <div class="p-2 bg-slate-50 rounded">
+                        \[P_e = \frac{R_1 \cdot C_1 + R_2 \cdot C_2}{N^2}\]
+                    </div>
+                </div>
+                <div>
+                    <div class="text-slate-500 mb-2">3. Kappa 系数</div>
+                    <div class="p-2 bg-slate-50 rounded font-bold">
+                        \[\kappa = \frac{P_o - P_e}{1 - P_e}\]
+                    </div>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <script>
+        const inputs = {
+            a: document.getElementById('cell-a'),
+            b: document.getElementById('cell-b'),
+            c: document.getElementById('cell-c'),
+            d: document.getElementById('cell-d')
+        };
+
+        const displays = {
+            row1: document.getElementById('row-1-sum'),
+            row2: document.getElementById('row-2-sum'),
+            col1: document.getElementById('col-1-sum'),
+            col2: document.getElementById('col-2-sum'),
+            n: document.getElementById('total-n'),
+            po: document.getElementById('res-po'),
+            pe: document.getElementById('res-pe'),
+            kappa: document.getElementById('res-kappa'),
+            barPo: document.getElementById('bar-po'),
+            barPe: document.getElementById('bar-pe'),
+            barKappa: document.getElementById('bar-kappa'),
+            barPoVal: document.getElementById('bar-po-val'),
+            barPeVal: document.getElementById('bar-pe-val'),
+            barKappaVal: document.getElementById('bar-kappa-val'),
+            insight: document.getElementById('insight-box')
+        };
+
+        function calculate() {
+            let a = Math.max(0, parseInt(inputs.a.value) || 0);
+            let b = Math.max(0, parseInt(inputs.b.value) || 0);
+            let c = Math.max(0, parseInt(inputs.c.value) || 0);
+            let d = Math.max(0, parseInt(inputs.d.value) || 0);
+
+            // Update internal values to clean negatives if any
+            inputs.a.value = a; inputs.b.value = b; inputs.c.value = c; inputs.d.value = d;
+
+            const r1 = a + b;
+            const r2 = c + d;
+            const c1 = a + c;
+            const c2 = b + d;
+            const n = r1 + r2;
+
+            displays.row1.innerText = r1;
+            displays.row2.innerText = r2;
+            displays.col1.innerText = c1;
+            displays.col2.innerText = c2;
+            displays.n.innerText = n;
+
+            if (n === 0) {
+                updateUI(0, 0, 0);
+                return;
+            }
+
+            const po = (a + d) / n;
+            const pe = ((r1 * c1) + (r2 * c2)) / (n * n);
+            
+            let kappa = 0;
+            if (pe === 1) {
+                kappa = po === 1 ? 1 : 0;
+            } else {
+                kappa = (po - pe) / (1 - pe);
+            }
+
+            updateUI(po, pe, kappa);
+            generateInsight(po, pe, kappa, a, b, c, d);
+        }
+
+        function updateUI(po, pe, kappa) {
+            displays.po.innerText = po.toFixed(3);
+            displays.pe.innerText = pe.toFixed(3);
+            displays.kappa.innerText = kappa.toFixed(3);
+
+            displays.barPo.style.width = (po * 100) + '%';
+            displays.barPe.style.width = (pe * 100) + '%';
+            
+            // Kappa can be negative
+            const kappaWidth = Math.max(0, Math.min(100, kappa * 100));
+            displays.barKappa.style.width = kappaWidth + '%';
+            displays.barKappa.className = kappa < 0 ? 'bg-red-400 h-full transition-all duration-500' : 'bg-blue-500 h-full transition-all duration-500';
+
+            displays.barPoVal.innerText = (po * 100).toFixed(1) + '%';
+            displays.barPeVal.innerText = (pe * 100).toFixed(1) + '%';
+            displays.barKappaVal.innerText = kappa.toFixed(3);
+        }
+
+        function generateInsight(po, pe, kappa, a, b, c, d) {
+            let text = "";
+            if (a+d > 0 && b+c === 0) {
+                text = "💡 <strong>完全一致：</strong>观测者之间没有任何分歧，Kappa 系数为 1.0。";
+            } else if (kappa < 0.2 && po > 0.8) {
+                text = "⚠️ <strong>样本不平衡陷阱：</strong>虽然观察准确率 \(P_o\) 很高，但由于样本分布极度向某一类倾斜，导致随机一致性 \(P_e\) 也非常高。这意味着模型可能只是通过“盲猜”主流类别就获得了高分，Kappa 揭示了其缺乏真正的判别能力。";
+            } else if (kappa < 0) {
+                text = "❗ <strong>劣于随机：</strong>Kappa 为负数，说明观测者之间的一致性甚至不如纯粹的随机猜测。";
+            } else if (kappa > 0.8) {
+                text = "✅ <strong>极高的一致性：</strong>剔除随机因素后，分类结果依然高度可靠。";
+            } else if (kappa > 0.4) {
+                text = "📈 <strong>中等一致性：</strong>分类器具有一定的预测价值。";
+            } else {
+                text = "ℹ️ 调整左侧矩阵中的 \(a, b, c, d\) 来观察对 \(P_e\) 和 \(\kappa\) 的动态影响。";
+            }
+            displays.insight.innerHTML = text;
+        }
+
+        function setPreset(a, b, c, d) {
+            inputs.a.value = a;
+            inputs.b.value = b;
+            inputs.c.value = c;
+            inputs.d.value = d;
+            calculate();
+        }
+
+        Object.values(inputs).forEach(input => {
+            input.addEventListener('input', calculate);
+        });
+
+        // Initialize
+        calculate();
+    </script>
+</body>
+</html>
