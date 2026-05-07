@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI Agent ReAct Loop 模拟器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :root {
+            --primary: #8b5cf6;
+            --primary-dark: #7c3aed;
+            --bg-dark: #0f172a;
+            --card-bg: #1e293b;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: #f8fafc;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow: hidden;
+            touch-action: manipulation;
+        }
+
+        .control-panel {
+            background: var(--card-bg);
+            border-right: 1px solid #334155;
+            z-index: 10;
+        }
+
+        .canvas-container {
+            background: radial-gradient(circle at center, #1e293b 0%, #0f172a 100%);
+            position: relative;
+        }
+
+        .slider-thumb::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 24px;
+            height: 24px;
+            background: var(--primary);
+            cursor: pointer;
+            border-radius: 50%;
+            border: 2px solid white;
+        }
+
+        .log-container {
+            font-family: 'Courier New', Courier, monospace;
+            scrollbar-width: thin;
+            scrollbar-color: #475569 transparent;
+        }
+
+        .log-container::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .log-container::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 10px;
+        }
+
+        @keyframes pulse-node {
+            0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.4); }
+            70% { transform: scale(1.05); box-shadow: 0 0 0 10px rgba(139, 92, 246, 0); }
+            100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(139, 92, 246, 0); }
+        }
+
+        .node-active {
+            animation: pulse-node 1.5s infinite;
+            border: 2px solid var(--primary) !important;
+        }
+
+        @keyframes scanline {
+            0% { transform: translateY(-100%); }
+            100% { transform: translateY(100%); }
+        }
+
+        .scanline {
+            position: absolute;
+            width: 100%;
+            height: 2px;
+            background: rgba(139, 92, 246, 0.2);
+            animation: scanline 4s linear infinite;
+        }
+    </style>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    const katexOptions = {
+        delimiters: [
+            {left: '\\[', right: '\\]', display: true},
+            {left: '\\(', right: '\\)', display: false},
+            {left: '$$', right: '$$', display: true},
+            {left: '$', right: '$', display: false}
+        ],
+        throwOnError: false,
+        strict: false,
+        trust: true
+    };
+
+    let renderTimeout;
+    function safeRender() {
+        if (renderTimeout) clearTimeout(renderTimeout);
+        renderTimeout = setTimeout(() => {
+            renderMathInElement(document.body, katexOptions);
+        }, 100);
+    }
+
+    renderMathInElement(document.body, katexOptions);
+
+    const observer = new MutationObserver((mutations) => {
+        let shouldRender = false;
+        mutations.forEach((mutation) => {
+            if (mutation.target &&
+                mutation.target.className &&
+                typeof mutation.target.className === 'string' &&
+                mutation.target.className.includes('katex')) {
+                return;
+            }
+            shouldRender = true;
+        });
+
+        if (shouldRender) {
+            safeRender();
+        }
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true
+    });
+
+    setInterval(() => {
+        const text = document.body.innerText;
+        if (text.includes('\\(') || text.includes('$$')) {
+            safeRender();
+        }
+    }, 2000);
+});
+</script>
+</head>
+<body class="flex flex-col md:flex-row h-screen w-screen overflow-hidden">
+
+<script type="application/json" id="widget-config">
+{
+  "type": "simulation",
+  "concept": "ai_agent_react_loop",
+  "description": "通过互动展示 Agent 的 ReAct (Reasoning + Acting) 闭环工作流程",
+  "variables": [
+    { "name": "complexity", "label": "任务复杂度 (步骤)", "min": 1, "max": 5, "default": 3, "unit": "步" },
+    { "name": "toolsCount", "label": "可用工具数量", "min": 1, "max": 4, "default": 3, "unit": "个" },
+    { "name": "successRate", "label": "执行成功率", "min": 10, "max": 100, "default": 80, "unit": "%" }
+  ],
+  "presets": [
+    { "name": "简单查询", "variables": { "complexity": 1, "toolsCount": 1, "successRate": 95 } },
+    { "name": "复杂工作流", "variables": { "complexity": 4, "toolsCount": 4, "successRate": 70 } }
+  ]
+}
+</script>
+
+<!-- 左侧/顶部控制面板 -->
+<div id="controls" class="w-full md:w-80 flex flex-col p-4 space-y-4 control-panel shrink-0 overflow-y-auto max-h-[45vh] md:max-h-screen">
+    <div class="mb-2">
+        <h1 class="text-xl font-bold text-white flex items-center">
+            <span class="mr-2">🤖</span> Agent ReAct Loop
+        </h1>
+        <p class="text-xs text-slate-400 mt-1">Reasoning (推理) + Acting (行动)</p>
+    </div>
+
+    <!-- 变量控制 -->
+    <div class="space-y-4">
+        <div>
+            <div class="flex justify-between mb-1">
+                <label class="text-sm font-medium">任务复杂度</label>
+                <span id="complexity-display" class="text-xs text-purple-400 font-mono">3步</span>
+            </div>
+            <input type="range" id="complexity-slider" data-var="complexity" min="1" max="5" value="3" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer slider-thumb">
+        </div>
+
+        <div>
+            <div class="flex justify-between mb-1">
+                <label class="text-sm font-medium">可用工具数</label>
+                <span id="toolsCount-display" class="text-xs text-purple-400 font-mono">3个</span>
+            </div>
+            <input type="range" id="toolsCount-slider" data-var="toolsCount" min="1" max="4" value="3" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer slider-thumb">
+        </div>
+
+        <div>
+            <div class="flex justify-between mb-1">
+                <label class="text-sm font-medium">执行成功率</label>
+                <span id="successRate-display" class="text-xs text-purple-400 font-mono">80%</span>
+            </div>
+            <input type="range" id="successRate-slider" data-var="successRate" min="10" max="100" value="80" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer slider-thumb">
+        </div>
+    </div>
+
+    <!-- 预设按钮 -->
+    <div class="grid grid-cols-2 gap-2 mt-2">
+        <button onclick="applyPreset('简单查询')" class="text-xs bg-slate-700 hover:bg-slate-600 py-2 px-1 rounded transition-colors">简单查询</button>
+        <button onclick="applyPreset('复杂工作流')" class="text-xs bg-slate-700 hover:bg-slate-600 py-2 px-1 rounded transition-colors">复杂工作流</button>
+    </div>
+
+    <!-- 主控按钮 -->
+    <div class="flex flex-col space-y-2 pt-4">
+        <button id="main-btn" onclick="handleMainAction()" class="w-full bg-violet-600 hover:bg-violet-700 text-white font-bold py-3 rounded-lg shadow-lg transform active:scale-95 transition-all">
+            启动 Agent
+        </button>
+        <button id="reset-btn" onclick="resetSimulation()" class="w-full bg-slate-700 hover:bg-slate-600 text-slate-200 py-2 rounded-lg transition-all text-sm">
+            重置
+        </button>
+    </div>
+
+    <!-- 运行日志 (桌面端可见更多) -->
+    <div class="flex-1 min-h-[100px] flex flex-col overflow-hidden border border-slate-700 rounded p-2 bg-slate-900/50 mt-4">
+        <span class="text-[10px] uppercase text-slate-500 font-bold mb-1">Execution Log</span>
+        <div id="log-container" class="log-container text-[11px] overflow-y-auto h-full space-y-1 text-slate-300">
+            <div class="text-slate-500 italic">> 系统就绪，等待指令...</div>
+        </div>
+    </div>
+</div>
+
+<!-- 右侧画布区 -->
+<div class="flex-1 canvas-container relative overflow-hidden">
+    <div class="scanline"></div>
+    <canvas id="main-canvas"></canvas>
+    
+    <!-- 状态浮窗 -->
+    <div id="status-overlay" class="absolute top-4 right-4 bg-slate-900/80 backdrop-blur-sm p-3 rounded-lg border border-slate-700 hidden">
+        <div class="text-[10px] text-slate-400 uppercase">当前状态</div>
+        <div id="current-state-text" class="text-sm font-bold text-purple-400">正在思考...</div>
+        <div class="mt-2 text-[10px] text-slate-400 uppercase">进度</div>
+        <div class="w-32 h-1 bg-slate-700 rounded-full mt-1">
+            <div id="progress-bar" class="h-full bg-purple-500 rounded-full transition-all duration-300" style="width: 0%"></div>
+        </div>
+    </div>
+
+    <!-- 成功/失败提示 -->
+    <div id="result-overlay" class="absolute inset-0 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm hidden z-20">
+        <div class="bg-slate-800 p-6 rounded-xl border-2 border-slate-600 shadow-2xl text-center max-w-xs">
+            <div id="result-icon" class="text-5xl mb-4">✅</div>
+            <h2 id="result-title" class="text-xl font-bold mb-2">任务完成</h2>
+            <p id="result-desc" class="text-sm text-slate-300 mb-6">Agent 已成功解决目标问题。</p>
+            <button onclick="resetSimulation()" class="bg-violet-600 px-6 py-2 rounded-full font-bold">再次尝试</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- 状态管理 ---
+    const state = {
+        running: false,
+        paused: false,
+        ended: false,
+        currentStep: 0,
+        subStep: 'idle', // 'thinking', 'acting', 'observing'
+        totalSteps: 3,
+        tools: 3,
+        successRate: 0.8,
+        progress: 0,
+        logs: [],
+        nodes: {},
+        particles: []
+    };
+
+    // --- 核心配置 ---
+    const config = {
+        colors: {
+            agent: '#8b5cf6',
+            thought: '#06b6d4',
+            action: '#f59e0b',
+            observation: '#10b981',
+            text: '#f8fafc',
+            line: '#334155'
+        },
+        nodeRadius: 45
+    };
+
+    const canvas = document.getElementById('main-canvas');
+    const ctx = canvas.getContext('2d');
+    const logContainer = document.getElementById('log-container');
+
+    // --- 初始化 ---
+    function init() {
+        resize();
+        window.addEventListener('resize', resize);
+        
+        // 绑定输入事件
+        document.querySelectorAll('input[type="range"]').forEach(input => {
+            input.addEventListener('input', (e) => {
+                const val = e.target.value;
+                const key = e.target.getAttribute('data-var');
+                document.getElementById(`${key}-display`).innerText = val + (key === 'complexity' ? '步' : (key === 'toolsCount' ? '个' : '%'));
+                if (!state.running) {
+                    state.totalSteps = parseInt(document.getElementById('complexity-slider').value);
+                    state.tools = parseInt(document.getElementById('toolsCount-slider').value);
+                    state.successRate = parseInt(document.getElementById('successRate-slider').value) / 100;
+                }
+            });
+        });
+
+        // 键盘支持
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') handleMainAction();
+            if (e.code === 'KeyR') resetSimulation();
+        });
+
+        animate();
+    }
+
+    function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.parentElement.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+        canvas.style.width = rect.width + 'px';
+        canvas.style.height = rect.height + 'px';
+        ctx.scale(dpr, dpr);
+        
+        calculateNodePositions();
+    }
+
+    function calculateNodePositions() {
+        const w = canvas.width / (window.devicePixelRatio || 1);
+        const h = canvas.height / (window.devicePixelRatio || 1);
+        const cx = w / 2;
+        const cy = h / 2;
+        const radius = Math.min(w, h) * 0.3;
+
+        state.nodes = {
+            AGENT: { x: cx, y: cy, label: 'Agent', color: config.colors.agent, icon: '🤖' },
+            THOUGHT: { x: cx, y: cy - radius, label: 'Thought', color: config.colors.thought, icon: '💡' },
+            ACTION: { x: cx + radius, y: cy, label: 'Action', color: config.colors.action, icon: '🛠️' },
+            OBSERVATION: { x: cx, y: cy + radius, label: 'Observation', color: config.colors.observation, icon: '👁️' }
+        };
+    }
+
+    // --- 模拟逻辑 ---
+    let lastTime = 0;
+    let stepTimer = 0;
+    const STEP_DURATION = 1500; // 每个子步骤时长
+
+    function handleMainAction() {
+        if (state.ended) {
+            resetSimulation();
+            startSim();
+        } else if (state.running) {
+            pauseSim();
+        } else {
+            startSim();
+        }
+    }
+
+    function startSim() {
+        state.running = true;
+        state.paused = false;
+        state.ended = false;
+        state.totalSteps = parseInt(document.getElementById('complexity-slider').value);
+        state.tools = parseInt(document.getElementById('toolsCount-slider').value);
+        state.successRate = parseInt(document.getElementById('successRate-slider').value) / 100;
+        
+        document.getElementById('main-btn').innerText = '暂停';
+        document.getElementById('status-overlay').classList.remove('hidden');
+        addLog('🚀 任务启动: 开始 ReAct 循环...', 'text-white font-bold');
+        
+        if (state.subStep === 'idle') {
+            transitionTo('thinking');
+        }
+    }
+
+    function pauseSim() {
+        state.running = false;
+        state.paused = true;
+        document.getElementById('main-btn').innerText = '继续';
+        addLog('⏸️ 模拟已暂停');
+    }
+
+    function resetSimulation() {
+        state.running = false;
+        state.paused = false;
+        state.ended = false;
+        state.currentStep = 0;
+        state.subStep = 'idle';
+        state.progress = 0;
+        stepTimer = 0;
+        
+        document.getElementById('main-btn').innerText = '启动 Agent';
+        document.getElementById('status-overlay').classList.add('hidden');
+        document.getElementById('result-overlay').classList.add('hidden');
+        document.getElementById('progress-bar').style.width = '0%';
+        
+        logContainer.innerHTML = '<div class="text-slate-500 italic">> 系统就绪，等待指令...</div>';
+        addLog('🔄 系统已重置');
+    }
+
+    function transitionTo(sub) {
+        state.subStep = sub;
+        stepTimer = 0;
+        
+        const statusText = document.getElementById('current-state-text');
+        
+        switch(sub) {
+            case 'thinking':
+                statusText.innerText = '正在思考 (Reasoning)...';
+                statusText.style.color = config.colors.thought;
+                addLog(`[第 ${state.currentStep + 1} 步] Thought: 分析当前状态并规划行动...`);
+                spawnParticles(state.nodes.AGENT, state.nodes.THOUGHT);
+                break;
+            case 'acting':
+                statusText.innerText = '正在行动 (Acting)...';
+                statusText.style.color = config.colors.action;
+                const toolNames = ['搜索', '计算器', '数据库', '翻译'];
+                const tool = toolNames[Math.floor(Math.random() * state.tools)];
+                addLog(`[第 ${state.currentStep + 1} 步] Action: 使用工具 [${tool}] 执行指令...`);
+                spawnParticles(state.nodes.THOUGHT, state.nodes.ACTION);
+                break;
+            case 'observing':
+                statusText.innerText = '观察结果 (Observing)...';
+                statusText.style.color = config.colors.observation;
+                
+                // 成功率判定
+                const isSuccess = Math.random() < state.successRate;
+                if (isSuccess) {
+                    addLog(`[第 ${state.currentStep + 1} 步] Observation: 工具返回预期结果。`, 'text-green-400');
+                    spawnParticles(state.nodes.ACTION, state.nodes.OBSERVATION);
+                } else {
+                    addLog(`[第 ${state.currentStep + 1} 步] Error: 执行失败，捕获异常中...`, 'text-red-400');
+                    spawnParticles(state.nodes.ACTION, state.nodes.AGENT, 'red');
+                    // 失败后回到思考环节，但不增加进度
+                    setTimeout(() => transitionTo('thinking'), 1000);
+                    return;
+                }
+                break;
+        }
+    }
+
+    function addLog(msg, className = '') {
+        const div = document.createElement('div');
+        div.className = className;
+        div.innerText = `> ${msg}`;
+        logContainer.appendChild(div);
+        logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    function completeStep() {
+        state.currentStep++;
+        state.progress = (state.currentStep / state.totalSteps) * 100;
+        document.getElementById('progress-bar').style.width = state.progress + '%';
+        
+        if (state.currentStep >= state.totalSteps) {
+            endSimulation(true);
+        } else {
+            spawnParticles(state.nodes.OBSERVATION, state.nodes.AGENT);
+            transitionTo('thinking');
+        }
+    }
+
+    function endSimulation(success) {
+        state.running = false;
+        state.ended = true;
+        document.getElementById('main-btn').innerText = '重新开始';
+        
+        const overlay = document.getElementById('result-overlay');
+        const title = document.getElementById('result-title');
+        const desc = document.getElementById('result-desc');
+        const icon = document.getElementById('result-icon');
+        
+        overlay.classList.remove('hidden');
+        if (success) {
+            title.innerText = '任务圆满完成';
+            desc.innerText = `Agent 经过 ${state.currentStep} 轮思考与行动，成功得出了 Final Answer。`;
+            icon.innerText = '✅';
+            addLog('🏆 Final Answer: 任务已成功完成！', 'text-green-400 font-bold text-sm');
+        }
+    }
+
+    // --- 绘制逻辑 ---
+    function spawnParticles(from, to, colorType = 'normal') {
+        for (let i = 0; i < 15; i++) {
+            state.particles.push({
+                x: from.x,
+                y: from.y,
+                tx: to.x,
+                ty: to.y,
+                progress: 0,
+                speed: 0.01 + Math.random() * 0.02,
+                size: 2 + Math.random() * 3,
+                color: colorType === 'red' ? '#ef4444' : from.color,
+                offset: (Math.random() - 0.5) * 30
+            });
+        }
+    }
+
+    function draw() {
+        const w = canvas.width / (window.devicePixelRatio || 1);
+        const h = canvas.height / (window.devicePixelRatio || 1);
+        ctx.clearRect(0, 0, w, h);
+
+        // 1. 绘制连接线
+        ctx.beginPath();
+        ctx.strokeStyle = config.colors.line;
+        ctx.setLineDash([5, 5]);
+        ctx.lineWidth = 2;
+        ctx.moveTo(state.nodes.AGENT.x, state.nodes.AGENT.y);
+        ctx.lineTo(state.nodes.THOUGHT.x, state.nodes.THOUGHT.y);
+        ctx.lineTo(state.nodes.ACTION.x, state.nodes.ACTION.y);
+        ctx.lineTo(state.nodes.OBSERVATION.x, state.nodes.OBSERVATION.y);
+        ctx.lineTo(state.nodes.AGENT.x, state.nodes.AGENT.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // 2. 绘制粒子
+        state.particles = state.particles.filter(p => {
+            p.progress += p.speed;
+            const x = p.x + (p.tx - p.x) * p.progress;
+            const y = p.y + (p.ty - p.y) * p.progress;
+            
+            ctx.fillStyle = p.color;
+            ctx.beginPath();
+            ctx.arc(x + Math.sin(p.progress * 10) * p.offset * 0.2, y + Math.cos(p.progress * 10) * p.offset * 0.2, p.size, 0, Math.PI * 2);
+            ctx.fill();
+            
+            return p.progress < 1;
+        });
+
+        // 3. 绘制节点
+        Object.keys(state.nodes).forEach(key => {
+            const node = state.nodes[key];
+            const isActive = (state.subStep.toUpperCase() === key) || (key === 'AGENT' && state.subStep === 'idle');
+            
+            // 外圈
+            ctx.beginPath();
+            ctx.fillStyle = isActive ? node.color + '22' : '#1e293b';
+            ctx.strokeStyle = isActive ? node.color : '#475569';
+            ctx.lineWidth = isActive ? 4 : 2;
+            ctx.arc(node.x, node.y, config.nodeRadius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            // 文本和图标
+            ctx.textAlign = 'center';
+            ctx.font = '24px Arial';
+            ctx.fillText(node.icon, node.x, node.y + 5);
+            
+            ctx.fillStyle = config.colors.text;
+            ctx.font = 'bold 12px Arial';
+            ctx.fillText(node.label, node.x, node.y + config.nodeRadius + 20);
+            
+            if (isActive && state.running) {
+                // 绘制进度环
+                ctx.beginPath();
+                ctx.strokeStyle = node.color;
+                ctx.lineWidth = 4;
+                const endAngle = (stepTimer / STEP_DURATION) * Math.PI * 2 - Math.PI/2;
+                ctx.arc(node.x, node.y, config.nodeRadius + 6, -Math.PI/2, endAngle);
+                ctx.stroke();
+            }
+        });
+    }
+
+    function animate(time) {
+        const delta = time - lastTime;
+        lastTime = time;
+
+        if (state.running && !state.paused) {
+            stepTimer += delta;
+            if (stepTimer >= STEP_DURATION) {
+                if (state.subStep === 'thinking') transitionTo('acting');
+                else if (state.subStep === 'acting') transitionTo('observing');
+                else if (state.subStep === 'observing') completeStep();
+            }
+        }
+
+        draw();
+        requestAnimationFrame(animate);
+    }
+
+    function applyPreset(name) {
+        const presets = JSON.parse(document.getElementById('widget-config').textContent).presets;
+        const p = presets.find(x => x.name === name);
+        if (p) {
+            resetSimulation();
+            Object.entries(p.variables).forEach(([key, val]) => {
+                const slider = document.getElementById(`${key}-slider`);
+                slider.value = val;
+                slider.dispatchEvent(new Event('input'));
+            });
+        }
+    }
+
+    // --- 教师指令监听器 ---
+    window.addEventListener('message', function(event) {
+        const { type, target, state: newState, content } = event.data;
+        switch (type) {
+            case 'SET_WIDGET_STATE':
+                if (newState) {
+                    Object.entries(newState).forEach(([key, value]) => {
+                        const slider = document.getElementById(key + '-slider');
+                        if (slider) {
+                            slider.value = value;
+                            slider.dispatchEvent(new Event('input'));
+                        }
+                    });
+                }
+                break;
+            case 'HIGHLIGHT_ELEMENT':
+                const el = document.querySelector(target);
+                if (el) {
+                    el.classList.add('node-active');
+                    setTimeout(() => el.classList.remove('node-active'), 3000);
+                }
+                break;
+            case 'ANNOTATE_ELEMENT':
+                const annotateEl = document.querySelector(target);
+                if (annotateEl && content) {
+                    const rect = annotateEl.getBoundingClientRect();
+                    const tooltip = document.createElement('div');
+                    tooltip.style.cssText = `position:fixed; top:${rect.top - 40}px; left:${rect.left}px; background:rgba(139,92,246,0.95); color:white; padding:8px 12px; border-radius:8px; font-size:14px; z-index:1000;`;
+                    tooltip.textContent = content;
+                    document.body.appendChild(tooltip);
+                    setTimeout(() => tooltip.remove(), 4000);
+                }
+                break;
+        }
+    });
+
+    init();
+</script>
+</body>
+</html>
